@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime
 from transformers import pipeline
+import torch  # ensure PyTorch backend
 
 # Ensure parent directory is in path for sibling imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -56,13 +57,16 @@ class Subconscious:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-        # Set up text-generation pipeline with quantization and sampling
+        # Set up text-generation pipeline
+        # Force PyTorch framework to use device_map correctly
         self.generator = pipeline(
             "text-generation",
             model=model_name,
             tokenizer=model_name,
-            load_in_8bit=USE_8BIT,
+            framework="pt",
             device_map=DEVICE_MAP,
+            load_in_8bit=USE_8BIT,
+            torch_dtype=torch.float16,
             temperature=TEMPERATURE,
             top_p=TOP_P,
             top_k=TOP_K,
