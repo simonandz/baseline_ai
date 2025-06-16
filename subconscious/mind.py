@@ -1,9 +1,11 @@
 import threading
 import time
 import queue
+import random
+import torch  # IMPORTANT: Add this import
 from datetime import datetime
-from typing import Optional
 from transformers import pipeline
+from typing import Optional
 from .config import *
 
 class Subconscious:
@@ -24,13 +26,14 @@ class Subconscious:
         self.generator = pipeline(
             "text-generation",
             model=model_name,
-            device=0 if torch.cuda.is_available() else -1,
+            device=0 if torch.cuda.is_available() else -1,  # Now torch is defined
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
         
         # Context tracking
         self.last_context = ""
         self.context_update_interval = 5  # Update context every 5 thoughts
+        self.last_thought = ""
 
     def _get_context(self) -> str:
         """Get relevant context from memory"""
@@ -72,6 +75,11 @@ class Subconscious:
             # Clean output
             thought = output.replace(prompt, "").strip()
             thought = thought.split("\n")[0]  # Take only first line
+            
+            # Update last thought
+            if thought:
+                self.last_thought = thought
+                
             return thought if thought else None
             
         except Exception as e:
