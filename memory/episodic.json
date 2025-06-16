@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": "2025-06-16T21:00:00",
+    "thought": "Attended robotics club meeting; noted new FPGA board specs.",
+    "salience": 0.8
+  },
+  {
+    "timestamp": "2025-06-16T21:05:00",
+    "thought": "Reviewed capacitor coupling issues in analog circuit.",
+    "salience": 0.6
+  }
+]
