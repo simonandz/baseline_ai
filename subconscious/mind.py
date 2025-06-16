@@ -57,8 +57,7 @@ class Subconscious:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-        # Set up text-generation pipeline
-        # Force PyTorch framework to use device_map correctly
+        # Load model with quantization settings; no sampling params here
         self.generator = pipeline(
             "text-generation",
             model=model_name,
@@ -67,9 +66,6 @@ class Subconscious:
             device_map=DEVICE_MAP,
             load_in_8bit=USE_8BIT,
             torch_dtype=torch.float16,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            top_k=TOP_K,
         )
 
     def start(self) -> None:
@@ -101,10 +97,14 @@ class Subconscious:
         prompt_parts.append(PROMPT_PREFIX)
         prompt = "\n".join(prompt_parts)
 
+        # Pass sampling parameters here, not in pipeline init
         outputs = self.generator(
             prompt,
             max_new_tokens=MAX_NEW_TOKENS,
             do_sample=True,
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
+            top_k=TOP_K,
             return_full_text=False
         )
         new_text = outputs[0]["generated_text"].strip()
@@ -117,8 +117,11 @@ class Subconscious:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            thought = self._generate_thought()
-            print(thought)
+            try:
+                thought = self._generate_thought()
+                print(thought)
+            except Exception as e:
+                print(f"Error generating thought: {e}")
             time.sleep(self.interval)
 
 if __name__ == "__main__":
