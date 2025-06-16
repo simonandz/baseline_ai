@@ -17,7 +17,8 @@ try:
         DEFAULT_MODEL,
         PROMPT_PREFIX,
         MAX_NEW_TOKENS,
-        DEVICE,
+        USE_8BIT,
+        DEVICE_MAP,
         MEMORY_CONTEXT_SIZE,
         TEMPERATURE,
         TOP_P,
@@ -29,7 +30,8 @@ except ImportError:
         DEFAULT_MODEL,
         PROMPT_PREFIX,
         MAX_NEW_TOKENS,
-        DEVICE,
+        USE_8BIT,
+        DEVICE_MAP,
         MEMORY_CONTEXT_SIZE,
         TEMPERATURE,
         TOP_P,
@@ -54,12 +56,13 @@ class Subconscious:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-        # Set up the text-generation pipeline with sampling parameters
+        # Set up text-generation pipeline with quantization and sampling
         self.generator = pipeline(
             "text-generation",
             model=model_name,
             tokenizer=model_name,
-            device=DEVICE,
+            load_in_8bit=USE_8BIT,
+            device_map=DEVICE_MAP,
             temperature=TEMPERATURE,
             top_p=TOP_P,
             top_k=TOP_K,

@@ -1,14 +1,20 @@
 # subconscious/config.py
 """
 Configuration settings for the Subconscious module.
+Optimized for Google Colab GPU (12GB+ VRAM).
 """
 
 # Interval between thought generations (in seconds)
 INTERVAL_SECONDS = 5
 
-# Default Hugging Face model optimized for CPU
-# The largest model recommended for an 8th-gen Surface Pro is "gpt2-medium" (~345M parameters).
-DEFAULT_MODEL = "gpt2-medium"
+# Default Hugging Face model for Colab GPU
+# - "EleutherAI/gpt-j-6B" (~6B parameters)
+#   loaded in 8-bit to fit in ~8GB VRAM
+DEFAULT_MODEL = "EleutherAI/gpt-j-6B"
+
+# Quantization settings
+USE_8BIT = True           # requires bitsandbytes
+DEVICE_MAP = "auto"      # let accelerate pick GPU device
 
 # Sampling parameters for creative, coherent outputs
 TEMPERATURE = 0.9
@@ -20,9 +26,6 @@ PROMPT_PREFIX = "Subconscious thought:"
 
 # Maximum number of new tokens to generate per thought
 MAX_NEW_TOKENS = 40
-
-# Device: -1 for CPU only (no GPU)
-DEVICE = -1
 
 # Number of recent memories to fetch for context
 MEMORY_CONTEXT_SIZE = 5
