@@ -20,7 +20,8 @@ class Subconscious:
         output_queue: queue.Queue,
         memory=None,
         model_name: str = "EleutherAI/gpt-neo-1.3B",
-        interval: float = 3.0
+        interval: float = 3.0,
+        device: torch.device = None  # Add device parameter
     ):
         """
         Continuous thought generator
@@ -45,7 +46,7 @@ class Subconscious:
         self.generator = pipeline(
             "text-generation",
             model=model_name,
-            device=0 if torch.cuda.is_available() else -1,
+            device=device if device else 0 if torch.cuda.is_available() else -1,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
         

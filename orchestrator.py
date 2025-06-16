@@ -1,3 +1,26 @@
+# Add to the top of orchestrator.py
+import torch
+import os
+
+# Resolve CUDA initialization conflicts
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
+# Clear GPU cache
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    device = torch.device("cuda")
+    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+else:
+    device = torch.device("cpu")
+    print("Using CPU")
+
+# Suppress TensorFlow logging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import logging
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("torch").setLevel(logging.WARNING)
+
 # orchestrator.py (partial)
 from memory.manager import MemoryManager
 from memory.preload import initialize_base_knowledge
@@ -19,9 +42,12 @@ def main():
     thought_queue = queue.Queue(maxsize=100)
     processor = ConsciousProcessor()
     
+    # In orchestrator.py, modify the Subconscious initialization
     subconscious = Subconscious(
         output_queue=thought_queue,
-        memory=mem_manager
+        memory=mem_manager,
+        model_name="EleutherAI/gpt-neo-125M",  # Smaller model
+        device=device  # Pass explicit device
     )
     
     # Start system
