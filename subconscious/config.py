@@ -1,32 +1,26 @@
-
-# subconscious/config.py
 """
-Configuration settings for the Subconscious module.
-Optimized for Google Colab GPU (12GB+ VRAM).
+Optimized configuration for continuous thought generation
+with reduced repetition and temporal awareness.
 """
 
-# Interval between thought generations (in seconds)
+# Generation interval (seconds)
 INTERVAL_SECONDS = 5
 
-# Default Hugging Face model for Colab GPU
-# - "EleutherAI/gpt-j-6B" (~6B parameters)
-#   loaded in 8-bit to fit in ~8GB VRAM
+# Model configuration
 DEFAULT_MODEL = "EleutherAI/gpt-j-6B"
+USE_8BIT = True
+DEVICE_MAP = "auto"
 
-# Quantization settings
-USE_8BIT = True           # requires bitsandbytes
-DEVICE_MAP = "auto"      # let accelerate pick GPU device
+# Generation parameters
+TEMPERATURE = 0.85          # Increased creativity
+TOP_P = 0.92                # Broader sampling
+TOP_K = 100                 # Wider token selection
+MAX_NEW_TOKENS = 60         # Response length
 
-# Sampling parameters for creative, coherent outputs
-TEMPERATURE = 0.9
-TOP_P = 0.95
-TOP_K = 50
-
-# Prompt prefix for thought generation
+# Context management
+MEMORY_CONTEXT_SIZE = 8     # Recent memories to include
 PROMPT_PREFIX = "Subconscious thought:"
 
-# Maximum number of new tokens to generate per thought
-MAX_NEW_TOKENS = 40
-
-# Number of recent memories to fetch for context
-MEMORY_CONTEXT_SIZE = 5
+# Similarity detection
+TFIDF_SIMILARITY_THRESHOLD = 0.65  # Strict duplicate prevention
+MAX_RECENT_THOUGHTS = 50    # Size of thought buffer
