@@ -3,6 +3,6 @@
 Conscious module package.
 Provides the ConsciousProcessor class for thought processing.
 """
-from .pipeline import ConsciousProcessor  # Updated import
+from .pipeline import ConsciousProcessor
 
-__all__ = ["ConsciousProcessor"]  # Updated export
+__all__ = ["ConsciousProcessor"]  # Only export the processor
