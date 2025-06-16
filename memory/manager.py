@@ -1,137 +1,224 @@
-import os
+# memory/manager.py
 import sqlite3
 import numpy as np
 import faiss
-from datetime import datetime
-from sentence_transformers import SentenceTransformer
-import logging
-from typing import List, Optional
 import threading
+import queue
+import logging
+from datetime import datetime
+from typing import List, Dict, Optional
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 class MemoryManager:
     def __init__(self, db_path: str = "memory/mind.db"):
-        """
-        Enhanced memory manager with:
-        - SQLite storage
-        - FAISS semantic search
-        - Thread-safe operations
-        
-        Args:
-            db_path: Path to SQLite database file
-        """
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self.lock = threading.Lock()
+        self.connection_pool = queue.Queue(maxsize=5)
         self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # Initialize database
+        self._initialize_connections()
         self._init_db()
-        logger.info(f"MemoryManager initialized with database at {db_path}")
+        logger.info("MemoryManager initialized with connection pool")
+
+    def _initialize_connections(self):
+        """Create initial connection pool"""
+        for _ in range(3):
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self.connection_pool.put(conn)
+
+    def _get_connection(self):
+        """Get a database connection from pool"""
+        return self.connection_pool.get()
+
+    def _return_connection(self, conn):
+        """Return connection to pool"""
+        self.connection_pool.put(conn)
 
     def _init_db(self):
-        """Initialize database tables"""
-        with self.lock:
-            self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS thoughts (
+        """Initialize database schema"""
+        conn = self._get_connection()
+        try:
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding BLOB,
+                type TEXT NOT NULL,
                 salience REAL DEFAULT 0.5,
-                category TEXT
+                immutable BOOLEAN DEFAULT 0,
+                parent_id INTEGER REFERENCES memories(id),
+                coherence_score REAL DEFAULT 0.0
             )""")
-            self.conn.commit()
+            
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS relationships (
+                source_id INTEGER NOT NULL REFERENCES memories(id),
+                target_id INTEGER NOT NULL REFERENCES memories(id),
+                relationship_type TEXT NOT NULL,
+                strength REAL DEFAULT 1.0,
+                PRIMARY KEY (source_id, target_id, relationship_type)
+            )""")
+            
+            conn.commit()
+        finally:
+            self._return_connection(conn)
 
-    def add_thought(
+    def add_memory(
         self,
         content: str,
+        memory_type: str,
         salience: float = 0.5,
-        category: Optional[str] = None
-    ) -> bool:
-        """
-        Add a thought to memory with semantic embedding
-        
-        Args:
-            content: The thought text
-            salience: Importance score (0.0-1.0)
-            category: Optional category label
-            
-        Returns:
-            bool: True if successfully added
-        """
+        parent_id: Optional[int] = None,
+        immutable: bool = False
+    ) -> int:
+        """Add a coherent memory with relational context"""
+        conn = self._get_connection()
         try:
+            # Generate embedding
             embedding = self.embedder.encode([content])[0]
             
-            with self.lock:
-                self.conn.execute(
-                    """INSERT INTO thoughts 
-                    (timestamp, content, embedding, salience, category)
-                    VALUES (?, ?, ?, ?, ?)""",
-                    (
-                        datetime.now().isoformat(),
-                        content,
-                        embedding.tobytes(),
-                        salience,
-                        category
-                    )
+            # Calculate coherence with parent
+            coherence = self._calculate_coherence(content, parent_id, conn) if parent_id else 0.7
+            
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO memories 
+                (timestamp, content, embedding, type, salience, immutable, parent_id, coherence_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    datetime.now().isoformat(),
+                    content,
+                    embedding.tobytes(),
+                    memory_type,
+                    salience,
+                    int(immutable),
+                    parent_id,
+                    coherence
                 )
-                self.conn.commit()
+            )
+            memory_id = cursor.lastrowid
             
-            logger.debug(f"Added thought to memory: {content[:50]}...")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to add thought: {e}")
-            return False
-
-    def get_recent_memories(self, limit: int = 5) -> List[str]:
-        """
-        Get most recent thoughts
-        
-        Args:
-            limit: Maximum number of thoughts to return
-            
-        Returns:
-            List of thought contents
-        """
-        try:
-            with self.lock:
-                cursor = self.conn.cursor()
+            # Create relationships
+            if parent_id:
                 cursor.execute(
-                    "SELECT content FROM thoughts "
-                    "ORDER BY timestamp DESC LIMIT ?",
-                    (limit,)
+                    """INSERT INTO relationships 
+                    (source_id, target_id, relationship_type, strength)
+                    VALUES (?, ?, ?, ?)""",
+                    (memory_id, parent_id, "hierarchical", min(1.0, coherence + 0.2))
                 )
-                return [row[0] for row in cursor.fetchall()]
+            
+            conn.commit()
+            return memory_id
+        except Exception as e:
+            logger.error(f"Add memory failed: {e}")
+            raise
+        finally:
+            self._return_connection(conn)
+
+    def _calculate_coherence(self, content: str, parent_id: int, conn: sqlite3.Connection) -> float:
+        """Calculate how well this memory fits with parent memory"""
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT content, embedding FROM memories WHERE id = ?",
+            (parent_id,)
+        )
+        parent_content, parent_embed = cursor.fetchone()
+        parent_embed = np.frombuffer(parent_embed)
+        
+        current_embed = self.embedder.encode([content])[0]
+        similarity = np.dot(parent_embed, current_embed) / (
+            np.linalg.norm(parent_embed) * np.linalg.norm(current_embed) + 1e-8)
+        
+        # Content similarity
+        content_sim = len(set(content.split()) & set(parent_content.split())) / max(
+            len(set(content.split())), 1)
+        
+        return min(1.0, (similarity + content_sim) / 2)
+
+    def get_recent_memories(self, limit: int = 5) -> List[Dict]:
+        """Get most recent memories with context"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id, content, type, salience 
+                FROM memories 
+                WHERE immutable = 0
+                ORDER BY timestamp DESC 
+                LIMIT ?""",
+                (limit,)
+            )
+            
+            memories = []
+            for row in cursor.fetchall():
+                mem = {
+                    "id": row[0],
+                    "content": row[1],
+                    "type": row[2],
+                    "salience": row[3]
+                }
                 
-        except Exception as e:
-            logger.error(f"Failed to get recent memories: {e}")
-            return []
-
-    def search_similar(self, query: str, limit: int = 3) -> List[str]:
-        """
-        Semantic search for similar thoughts
-        
-        Args:
-            query: Search query text
-            limit: Maximum results to return
-            
-        Returns:
-            List of similar thoughts
-        """
-        try:
-            # Get all embeddings from DB
-            with self.lock:
-                cursor = self.conn.cursor()
+                # Get parent context
                 cursor.execute(
-                    "SELECT id, embedding FROM thoughts "
-                    "WHERE embedding IS NOT NULL"
+                    """SELECT content 
+                    FROM memories 
+                    WHERE id = (
+                        SELECT source_id 
+                        FROM relationships 
+                        WHERE target_id = ? AND relationship_type = 'hierarchical'
+                    )""",
+                    (mem["id"],)
                 )
-                rows = cursor.fetchall()
+                parent = cursor.fetchone()
+                if parent:
+                    mem["context"] = parent[0]
+                
+                memories.append(mem)
+                
+            return memories
+        finally:
+            self._return_connection(conn)
+
+    def get_core_identity(self) -> Dict:
+        """Retrieve Maddie's core identity facts"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT content 
+                FROM memories 
+                WHERE type = 'identity' 
+                ORDER BY salience DESC"""
+            )
+            identity = {"core": [], "capabilities": []}
             
+            for row in cursor.fetchall():
+                identity["core"].append(row[0])
+                
+            # Get related capabilities
+            cursor.execute(
+                """SELECT m.content 
+                FROM memories m
+                JOIN relationships r ON m.id = r.target_id
+                JOIN memories parent ON r.source_id = parent.id
+                WHERE parent.type = 'identity' 
+                AND r.relationship_type = 'hierarchical'"""
+            )
+            for row in cursor.fetchall():
+                identity["capabilities"].append(row[0])
+                
+            return identity
+        finally:
+            self._return_connection(conn)
+
+    def find_related_memories(self, content: str, limit: int = 3) -> List[Dict]:
+        """Semantic search for related memories"""
+        conn = self._get_connection()
+        try:
+            # Get all embeddings
+            cursor = conn.execute("SELECT id, embedding FROM memories")
+            rows = cursor.fetchall()
             if not rows:
                 return []
                 
@@ -144,80 +231,32 @@ class MemoryManager:
             index.add(embeddings)
             
             # Search
-            query_embed = self.embedder.encode([query])
+            query_embed = self.embedder.encode([content])
             distances, indices = index.search(query_embed, limit)
             
-            # Get matching thoughts
-            with self.lock:
-                cursor = self.conn.cursor()
-                cursor.execute(
-                    f"SELECT content FROM thoughts "
-                    f"WHERE id IN ({','.join(map(str, [ids[i] for i in indices[0]]))})"
-                )
-                return [row[0] for row in cursor.fetchall()]
-                
-        except Exception as e:
-            logger.error(f"Semantic search failed: {e}")
-            return []
-
-    def consolidate_memories(self, salience_threshold: float = 0.7):
-        """
-        Process high-salience memories into long-term storage
-        
-        Args:
-            salience_threshold: Minimum salience for consolidation
-        """
-        try:
-            # Get high-salience thoughts
-            with self.lock:
-                cursor = self.conn.cursor()
-                cursor.execute(
-                    "SELECT content FROM thoughts "
-                    "WHERE salience >= ? "
-                    "ORDER BY timestamp DESC",
-                    (salience_threshold,)
-                )
-                important = [row[0] for row in cursor.fetchall()]
+            # Retrieve memories
+            placeholders = ','.join(['?']*len(indices[0]))
+            cursor = conn.execute(
+                f"""SELECT id, content, type, salience 
+                FROM memories 
+                WHERE id IN ({placeholders}) 
+                ORDER BY salience DESC""",
+                [ids[i] for i in indices[0]]
+            )
             
-            if not important:
-                return
-                
-            # Here you could add:
-            # - Clustering similar thoughts
-            # - LLM summarization
-            # - Knowledge graph updates
-            logger.info(f"Found {len(important)} important memories to consolidate")
-            
-        except Exception as e:
-            logger.error(f"Consolidation failed: {e}")
+            return [{
+                "id": row[0],
+                "content": row[1],
+                "type": row[2],
+                "salience": row[3]
+            } for row in cursor.fetchall()]
+        finally:
+            self._return_connection(conn)
 
-    def __del__(self):
-        """Cleanup on destruction"""
-        try:
-            self.conn.close()
-            logger.info("MemoryManager closed database connection")
-        except:
-            pass
-
-# Test function
-def test_memory_manager():
-    """Run basic functionality tests"""
-    import tempfile
-    with tempfile.NamedTemporaryFile() as tmp:
-        mm = MemoryManager(tmp.name)
-        
-        # Test adding thoughts
-        assert mm.add_thought("Test thought 1", 0.8)
-        assert mm.add_thought("Test thought 2", 0.9, "test")
-        
-        # Test retrieval
-        assert len(mm.get_recent_memories(2)) == 2
-        assert "Test thought 2" in mm.get_recent_memories(2)
-        
-        # Test search
-        assert len(mm.search_similar("test", 1)) > 0
-        
-        print("All basic tests passed!")
-
-if __name__ == "__main__":
-    test_memory_manager()
+    def consolidate_insights(self):
+        """Generate higher-level insights from recent memories"""
+        # Implementation would:
+        # 1. Cluster related observations
+        # 2. Generate abstract patterns
+        # 3. Create new insight memories
+        pass

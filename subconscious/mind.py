@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 import queue
 from typing import Optional
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -73,7 +74,15 @@ class Subconscious:
         embedding = self.embedder.encode([thought])[0]
         
         if self.recent_embeddings:
-            similarities = cosine_similarity([embedding], self.recent_embeddings)[0]
+            # Convert to numpy array for sklearn
+            embeddings_array = np.array(self.recent_embeddings)
+            
+            # Calculate similarity - note: cosine_similarity expects 2D arrays
+            similarities = cosine_similarity(
+                [embedding],  # Query embedding (1 x D)
+                embeddings_array  # Recent embeddings (N x D)
+            )
+            
             if np.max(similarities) > 0.85:  # Similarity threshold
                 return True
                 
@@ -105,8 +114,12 @@ class Subconscious:
                 raw_thought = result[0]['generated_text'].replace(prompt, "").strip()
                 
                 # Extract first complete sentence
-                thought = raw_thought.split('.')[0] + '.' if '.' in raw_thought else raw_thought
-                thought = thought.split('?')[0] + '?' if '?' in thought else thought
+                if '.' in raw_thought:
+                    thought = raw_thought.split('.')[0] + '.'
+                elif '?' in raw_thought:
+                    thought = raw_thought.split('?')[0] + '?'
+                else:
+                    thought = raw_thought
                 
                 if thought and not self._is_duplicate(thought):
                     return thought
@@ -144,3 +157,29 @@ class Subconscious:
         self._stop_event.set()
         self._thread.join()
         logger.info("Subconscious stopped")
+
+# Test code must come AFTER the class definition
+if __name__ == "__main__":
+    import time
+    import queue
+    
+    print("Running subconscious test...")
+    test_q = queue.Queue()
+    
+    # Initialize with test queue
+    sub = Subconscious(output_queue=test_q)
+    
+    # Start generation
+    sub.start()
+    print("Generation started (10 seconds)...")
+    
+    # Let it run for 10 seconds
+    time.sleep(10)
+    
+    # Stop and show results
+    sub.stop()
+    print(f"\nTest complete. Generated {test_q.qsize()} thoughts:")
+    
+    # Print the generated thoughts
+    while not test_q.empty():
+        print(f" - {test_q.get()}")
