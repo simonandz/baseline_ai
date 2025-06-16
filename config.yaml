@@ -1,0 +1,18 @@
+paths:
+  episodic_db: "memory/mind.db"
+  semantic_db: "memory/semantic.db"
+
+models:
+  subconscious:
+    name: "EleutherAI/gpt-neo-125M"  # Smaller default model
+    max_tokens: 40
+    temperature: 0.8
+  conscious:
+    refinement_model: "facebook/bart-large"
+    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+
+thresholds:
+  salience: 0.35
+  novelty: 0.25
+  relevance: 0.3
+  duplicate: 0.85

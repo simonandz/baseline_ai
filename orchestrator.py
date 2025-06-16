@@ -1,37 +1,42 @@
 import queue
 import time
 from subconscious.mind import Subconscious
-from conscious.mind import Conscious
+from conscious.pipeline import ConsciousProcessor
 from memory.manager import MemoryManager
 
-def main():
-    # Shared thought queue
-    thought_queue = queue.Queue(maxsize=50)
-    
-    # Initialize modules
-    mem_manager = MemoryManager()
-    subconscious = Subconscious(
-        thought_queue=thought_queue,
-        memory_manager=mem_manager
-    )
-    conscious = Conscious(
-        thought_queue=thought_queue,
-        memory_manager=mem_manager
-    )
-    
-    # Start the mind
-    subconscious.start()
-    conscious.start()
-    print("Mind started. Press Ctrl+C to stop.")
-    
-    try:
+class Orchestrator:
+    def __init__(self):
+        self.thought_queue = queue.Queue(maxsize=100)
+        self.memory = MemoryManager()
+        self.subconscious = Subconscious(self.thought_queue, self.memory)
+        self.conscious = ConsciousProcessor()
+
+    def start(self):
+        print("Starting mind...")
+        self.subconscious.start()
+        self._run_conscious()
+
+    def _run_conscious(self):
         while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nStopping mind...")
-        subconscious.stop()
-        conscious.stop()
-        print("Mind stopped.")
+            try:
+                if not self.thought_queue.empty():
+                    thought = self.thought_queue.get()
+                    result = self.conscious.process_thought(thought)
+                    
+                    if result['passed']:
+                        print(f"\n💭 Conscious Thought: {result['refined']}")
+                        self.memory.add_thought(
+                            result['refined'], 
+                            salience=result['salience']
+                        )
+                
+                time.sleep(0.1)  # Frequent checks
+                
+            except KeyboardInterrupt:
+                print("\nShutting down...")
+                self.subconscious.stop()
+                break
 
 if __name__ == "__main__":
-    main()
+    mind = Orchestrator()
+    mind.start()

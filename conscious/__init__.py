@@ -1,3 +1,5 @@
+#init conscious
+
 """
 Conscious module package.
 Provides the Conscious class for thought processing.
