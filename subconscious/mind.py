@@ -1,176 +1,125 @@
 import threading
 import time
-import os
-import sys
+import queue
 from datetime import datetime
-from collections import deque
-from typing import Deque, List, Optional
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    TextGenerationPipeline,
-)
-import torch
-
-# Path setup for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-try:
-    from .config import (
-        INTERVAL_SECONDS,
-        DEFAULT_MODEL,
-        PROMPT_PREFIX,
-        MAX_NEW_TOKENS,
-        USE_8BIT,
-        DEVICE_MAP,
-        MEMORY_CONTEXT_SIZE,
-        TEMPERATURE,
-        TOP_P,
-        TOP_K,
-        TFIDF_SIMILARITY_THRESHOLD,
-        MAX_RECENT_THOUGHTS,
-    )
-except ImportError:
-    from config import (
-        INTERVAL_SECONDS,
-        DEFAULT_MODEL,
-        PROMPT_PREFIX,
-        MAX_NEW_TOKENS,
-        USE_8BIT,
-        DEVICE_MAP,
-        MEMORY_CONTEXT_SIZE,
-        TEMPERATURE,
-        TOP_P,
-        TOP_K,
-        TFIDF_SIMILARITY_THRESHOLD,
-        MAX_RECENT_THOUGHTS,
-    )
-
+from typing import Optional
+from transformers import pipeline
+from .config import *
 
 class Subconscious:
-    """Continuous thought generator with temporal awareness and anti-repetition."""
-
     def __init__(
         self,
-        interval: int = INTERVAL_SECONDS,
-        model_name: str = DEFAULT_MODEL,
+        thought_queue: queue.Queue,
         memory_manager=None,
-        context_size: int = MEMORY_CONTEXT_SIZE,
-    ) -> None:
-        self.interval = interval
+        model_name: str = DEFAULT_MODEL,
+        interval: int = INTERVAL_SECONDS
+    ):
+        self.thought_queue = thought_queue
         self.memory_manager = memory_manager
-        self.context_size = context_size
-        self.last_thought: Optional[str] = None
-        self.recent: List[str] = []
+        self.interval = interval
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self.vectorizer = TfidfVectorizer(stop_words='english')
-        self.tfidf_matrix = None
-
-        # Model initialization
-        self._pipeline = TextGenerationPipeline(
-            model=AutoModelForCausalLM.from_pretrained(
-                model_name,
-                load_in_8bit=USE_8BIT,
-                device_map=DEVICE_MAP,
-                torch_dtype=torch.float16,
-            ),
-            tokenizer=AutoTokenizer.from_pretrained(model_name),
+        
+        # More efficient generation parameters
+        self.generator = pipeline(
+            "text-generation",
+            model=model_name,
+            device=0 if torch.cuda.is_available() else -1,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
+        
+        # Context tracking
+        self.last_context = ""
+        self.context_update_interval = 5  # Update context every 5 thoughts
 
-    def start(self) -> None:
-        """Start the background thought generation."""
-        self._thread.start()
-
-    def stop(self) -> None:
-        """Stop the generation thread."""
-        self._stop_event.set()
-        self._thread.join()
-
-    def _fetch_context(self) -> str:
-        """Retrieve relevant memories for context."""
-        if not self.memory_manager:
+    def _get_context(self) -> str:
+        """Get relevant context from memory"""
+        if not self.memory_manager or random.random() > 0.3:  # 30% chance to use context
             return ""
-        memories: List[str] = self.memory_manager.get_recent_memories(self.context_size)
-        return "\n".join(memories) + ("\n" if memories else "")
-
-    def _is_duplicate(self, text: str) -> bool:
-        """Check if thought is too similar to recent ones using TF-IDF."""
-        if not self.recent:
-            return False
             
-        # Update TF-IDF matrix
-        docs = self.recent + [text]
-        new_matrix = self.vectorizer.fit_transform(docs)
+        # Get both episodic and semantic context
+        episodic = self.memory_manager.get_recent_episodic(3)
+        semantic = self.memory_manager.get_relevant_semantic(self.last_thought or "", 2)
         
-        # Compare against all recent thoughts
-        similarities = cosine_similarity(new_matrix[-1:], new_matrix[:-1])
-        return np.max(similarities) > TFIDF_SIMILARITY_THRESHOLD
-
-    def _generate_once(self) -> str:
-        """Generate a single thought with temporal context."""
-        prompt_parts = []
-        context = self._fetch_context()
-        if context:
-            prompt_parts.append(context.strip())
+        context = []
+        if episodic:
+            context.append("Recent memories:\n" + "\n".join(episodic))
+        if semantic:
+            context.append("Related concepts:\n" + "\n".join(semantic))
         
-        # Temporal context
-        now = datetime.now().isoformat(timespec="seconds")
-        prompt_parts.append(f"Current time: {now}")
-        prompt_parts.append(PROMPT_PREFIX)
-        prompt = "\n".join(prompt_parts)
-
-        out = self._pipeline(
-            prompt,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=True,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            top_k=TOP_K,
-            return_full_text=False,
-        )[0]["generated_text"].strip()
-        return out
+        return "\n\n".join(context)
 
     def _generate_thought(self) -> Optional[str]:
-        """Generate a novel thought or skip if too similar."""
-        for _ in range(3):
-            text = self._generate_once()
-            if not self._is_duplicate(text):
-                self.recent.append(text)
-                if len(self.recent) > MAX_RECENT_THOUGHTS:
-                    self.recent.pop(0)
-                self.last_thought = text
-                if self.memory_manager:
-                    self.memory_manager.add_episodic(text)
-                return text
-        return None  # Skip this interval
+        """Generate a raw subconscious thought"""
+        try:
+            # Update context periodically
+            if random.random() < (1/self.context_update_interval):
+                self.last_context = self._get_context()
+            
+            prompt = self._build_prompt()
+            
+            output = self.generator(
+                prompt,
+                max_new_tokens=MAX_NEW_TOKENS,
+                do_sample=True,
+                temperature=TEMPERATURE,
+                top_p=TOP_P,
+                top_k=TOP_K,
+                num_return_sequences=1,
+                pad_token_id=50256  # Silence warning
+            )[0]['generated_text']
+            
+            # Clean output
+            thought = output.replace(prompt, "").strip()
+            thought = thought.split("\n")[0]  # Take only first line
+            return thought if thought else None
+            
+        except Exception as e:
+            print(f"Subconscious generation error: {e}")
+            return None
 
-    def _run(self) -> None:
-        """Main generation loop."""
+    def _build_prompt(self) -> str:
+        """Construct the generation prompt"""
+        prompt_parts = []
+        
+        # Add context if available
+        if self.last_context:
+            prompt_parts.append(self.last_context)
+            prompt_parts.append("")  # Empty line separator
+        
+        # Temporal context
+        now = datetime.now().strftime("%A, %B %d, %I:%M %p")
+        prompt_parts.append(f"Current time: {now}")
+        
+        # Core prompt
+        prompt_parts.append("Raw subconscious thought:")
+        return "\n".join(prompt_parts)
+
+    def _run(self):
+        """Main generation loop"""
+        thought_count = 0
         while not self._stop_event.is_set():
             try:
                 thought = self._generate_thought()
                 if thought:
-                    ts = datetime.now().isoformat(timespec="seconds")
-                    print(f"[{ts}] {thought}")
-            except Exception as exc:
-                print(f"Error: {exc}")
-            time.sleep(self.interval)
+                    # Add timestamp and queue
+                    timestamp = datetime.now().isoformat()
+                    self.thought_queue.put(f"{timestamp}|{thought}")
+                    thought_count += 1
+                    
+                    # Update memory
+                    if self.memory_manager:
+                        self.memory_manager.add_episodic(thought)
+                
+                time.sleep(self.interval)
+                
+            except Exception as e:
+                print(f"Subconscious error: {e}")
+                time.sleep(1)  # Prevent tight error loops
 
+    def start(self):
+        self._thread.start()
 
-if __name__ == "__main__":
-    from memory.manager import MemoryManager
-
-    mem = MemoryManager()
-    thinker = Subconscious(memory_manager=mem)
-    thinker.start()
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        thinker.stop()
-        print("Subconscious loop stopped.")
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join()

@@ -1,26 +1,13 @@
-"""
-Optimized configuration for continuous thought generation
-with reduced repetition and temporal awareness.
-"""
-
-# Generation interval (seconds)
-INTERVAL_SECONDS = 5
-
-# Model configuration
+# Generation parameters
+INTERVAL_SECONDS = 3  # More frequent raw thoughts
 DEFAULT_MODEL = "EleutherAI/gpt-j-6B"
 USE_8BIT = True
-DEVICE_MAP = "auto"
+MAX_NEW_TOKENS = 40  # Shorter raw thoughts
 
-# Generation parameters
-TEMPERATURE = 0.85          # Increased creativity
-TOP_P = 0.92                # Broader sampling
-TOP_K = 100                 # Wider token selection
-MAX_NEW_TOKENS = 60         # Response length
+# Creative generation parameters
+TEMPERATURE = 0.9  # More creative
+TOP_P = 0.95
+TOP_K = 100
 
-# Context management
-MEMORY_CONTEXT_SIZE = 8     # Recent memories to include
-PROMPT_PREFIX = "Subconscious thought:"
-
-# Similarity detection
-TFIDF_SIMILARITY_THRESHOLD = 0.65  # Strict duplicate prevention
-MAX_RECENT_THOUGHTS = 50    # Size of thought buffer
+# Context parameters
+CONTEXT_WINDOW = 3  # Last 3 memories for context
