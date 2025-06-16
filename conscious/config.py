@@ -1,8 +1,8 @@
 # Configuration for conscious thought processing
 CONSCIOUS_CHECK_INTERVAL = 1.0  # seconds
-SALIENCE_THRESHOLD = 0.65  # Minimum importance score
-NOVELTY_THRESHOLD = 0.55   # Minimum novelty score
-RELEVANCE_THRESHOLD = 0.6   # Minimum context relevance
+SALIENCE_THRESHOLD = 0.55  # Minimum importance score
+NOVELTY_THRESHOLD = 0.45   # Minimum novelty score
+RELEVANCE_THRESHOLD = 0.5   # Minimum context relevance
 
 # Refinement model (smaller/faster than subconscious model)
 REFINEMENT_MODEL = "facebook/bart-large-cnn"

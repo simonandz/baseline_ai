@@ -6,11 +6,10 @@ import os
 import sys
 from collections import deque
 from datetime import datetime
-from difflib import SequenceMatcher
 from typing import Deque, List, Optional
 
 import torch
-from transformers import pipeline
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextGenerationPipeline
 
 # Ensure project root on path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -30,7 +29,7 @@ from .config import (
 )
 
 class Subconscious:
-    """Continuously generates raw thoughts with memory-based context and no repeats."""
+    """Continuously generates raw thoughts with memory context and duplicate suppression."""
 
     def __init__(
         self,
@@ -38,73 +37,57 @@ class Subconscious:
         memory_manager=None,
         model_name: str = DEFAULT_MODEL,
         interval: int = INTERVAL_SECONDS,
-    ):
+    ) -> None:
         self.thought_queue = thought_queue
         self.memory_manager = memory_manager
         self.interval = interval
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-        # Internal counters and history
+        # State
         self.thought_count = 0
         self.recent: Deque[str] = deque(maxlen=50)
+        self.last_context: str = ""
 
-        # Build generator pipeline
-        self.generator = pipeline(
-            "text-generation",
-            model=model_name,
-            tokenizer=model_name,
-            framework="pt",
-            device_map=DEVICE_MAP,
+        # Load 8‑bit model
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
             load_in_8bit=USE_8BIT,
-            torch_dtype=torch.float16
+            device_map=DEVICE_MAP,
+            torch_dtype=torch.float16,
         )
-        # Cache eos_token_id for padding
-        self.eos_token_id = self.generator.tokenizer.eos_token_id
-        # Last context string
-        self.last_context = ""
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.eos_token_id = self.tokenizer.eos_token_id
+        self.generator = TextGenerationPipeline(model=self.model, tokenizer=self.tokenizer)
 
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        self._thread.join()
-
-    def _jaccard(self, a: str, b: str) -> float:
+    # ---------- helpers ---------- #
+    @staticmethod
+    def _jaccard(a: str, b: str) -> float:
         sa, sb = set(a.lower().split()), set(b.lower().split())
-        if not sa or not sb:
-            return 0.0
-        return len(sa & sb) / len(sa | sb)
+        return 0.0 if not sa or not sb else len(sa & sb) / len(sa | sb)
 
     def _is_duplicate(self, text: str) -> bool:
         return any(self._jaccard(text, prev) >= DUPLICATE_THRESHOLD for prev in self.recent)
 
     def _fetch_context(self) -> str:
-        """Retrieve the last CONTEXT_WINDOW episodic memories."""
         if not self.memory_manager:
             return ""
-        mems = getattr(self.memory_manager, 'get_recent_memories', lambda n: [])(CONTEXT_WINDOW)
+        mems = getattr(self.memory_manager, "get_recent_memories", lambda n: [])(CONTEXT_WINDOW)
         return "\n".join(mems) + ("\n" if mems else "")
 
     def _build_prompt(self) -> str:
-        parts: List[str] = []
-        # Refresh context every CONTEXT_UPDATE_INTERVAL thoughts
         if self.thought_count % CONTEXT_UPDATE_INTERVAL == 0:
             self.last_context = self._fetch_context()
+        parts: List[str] = []
         if self.last_context:
             parts.append(self.last_context.strip())
-        # Temporal marker
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        parts.append(f"Time: {now}")
-        # Instruct chain-of-thought
-        parts.append("Subconscious thought (extend previous idea, no repeats):")
+        parts.append(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        parts.append("Subconscious thought (extend previous idea, avoid repetition):")
         return "\n".join(parts)
 
     def _generate_thought(self) -> Optional[str]:
-        """Generate a single thought, retrying up to 3 times to avoid duplicates."""
         prompt = self._build_prompt()
-        for _ in range(3):
+        for _ in range(3):  # try up to 3 times to avoid duplicates
             out = self.generator(
                 prompt,
                 max_new_tokens=MAX_NEW_TOKENS,
@@ -115,32 +98,44 @@ class Subconscious:
                 pad_token_id=self.eos_token_id,
                 return_full_text=False,
             )[0]["generated_text"].strip()
-            # Strip prompt prefix
-            thought = out.replace(prompt, "").strip().split("\n")[0]
+            thought = out.split("\n")[0].strip()
             if thought and not self._is_duplicate(thought):
                 break
         else:
-            # fallback if all attempts duplicate
             thought = out.split("\n")[0].strip()
         self.recent.append(thought)
         return thought
 
+    # ---------- background loop ---------- #
     def _run(self) -> None:
-        import queue
+        import queue  # local import to avoid circular refs in type hints
         while not self._stop_event.is_set():
-            thought = self._generate_thought()
-            if thought:
-                timestamp = datetime.now().isoformat()
-                self.thought_queue.put(f"{timestamp}|{thought}")
-                # Store episodic with default salience
-                if self.memory_manager:
-                    self.memory_manager.add_episodic(thought)
-                self.thought_count += 1
+            try:
+                thought = self._generate_thought()
+                if thought:
+                    ts = datetime.now().isoformat()
+                    self.thought_queue.put(f"{ts}|{thought}")
+                    if self.memory_manager:
+                        self.memory_manager.add_episodic(thought)
+                    self.thought_count += 1
+            except Exception as exc:
+                print(f"Subconscious error: {exc}")
             time.sleep(self.interval)
 
+    # ---------- control ---------- #
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join()
+
+
+# Stand‑alone debug runner
 if __name__ == "__main__":
     import queue
     from memory.manager import MemoryManager
+
     tq = queue.Queue()
     mem = MemoryManager()
     sub = Subconscious(thought_queue=tq, memory_manager=mem)

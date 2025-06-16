@@ -1,3 +1,4 @@
+import torch
 from transformers import pipeline
 from .config import REFINEMENT_MODEL, REFINEMENT_MAX_TOKENS, REFINEMENT_TEMPERATURE
 

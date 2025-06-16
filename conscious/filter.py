@@ -1,5 +1,6 @@
 import re
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from typing import Dict, Tuple
 from .config import *
@@ -50,18 +51,22 @@ class ThoughtFilter:
         
         return min(1.0, score)
     
+        # after self-reference bonus
+        if thought[0].isupper() and thought.rstrip().endswith('.'):
+            score += 0.05            # <- new: favors complete sentences
+
     def _calculate_novelty(self, thought: str) -> float:
-        """Calculate how different this thought is from recent ones"""
-        if not self.recent_thoughts:
-            return 1.0  # First thought is maximally novel
-        
-        # Update with recent thoughts
-        docs = self.recent_thoughts + [thought]
-        tfidf_matrix = self.vectorizer.fit_transform(docs)
-        
-        # Calculate similarity to most recent thought
-        similarity = cosine_similarity(tfidf_matrix[-1], tfidf_matrix[-2])[0][0]
-        return 1.0 - similarity
+      """Compute novelty without refitting the vectorizer."""
+      if not self.recent_thoughts:
+          return 1.0  # first thought → maximally novel
+
+      # Vectorize current and previous thought in the existing TF-IDF space
+      vec_new  = self.vectorizer.transform([thought])
+      vec_prev = self.vectorizer.transform([self.recent_thoughts[-1]])
+
+      similarity = cosine_similarity(vec_new, vec_prev)[0][0]
+      return 1.0 - similarity
+
     
     def _calculate_relevance(self, thought: str) -> Tuple[float, str]:
         """Determine relevance to current context and categorize"""
@@ -89,6 +94,11 @@ class ThoughtFilter:
         salience = self._calculate_salience(thought)
         novelty = self._calculate_novelty(thought)
         relevance, category = self._calculate_relevance(thought)
+
+        # tiny boost so feelings & questions pass more often
+        if category in {"curiosity", "emotion"}:
+            salience += 0.05
+
         
         return {
             "raw": thought,
