@@ -1,116 +1,69 @@
-#filter concious
-
+# conscious/filter.py
 import re
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-from typing import Dict, Tuple
-from .config import *
+from sentence_transformers import SentenceTransformer
+from typing import Dict
 
 class ThoughtFilter:
     def __init__(self):
-        self.vectorizer = TfidfVectorizer(stop_words='english')
-        self.recent_thoughts = []
-        self.category_vectors = self._init_category_vectors()
-    
-    def _init_category_vectors(self) -> Dict[str, np.ndarray]:
-        """Create TF-IDF vectors for each thought category"""
-        category_docs = {}
-        for category, keywords in THOUGHT_CATEGORIES.items():
-            # Create pseudo-documents from keywords
-            category_docs[category] = " ".join(keywords)
+        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        self.recent_embeddings = []
         
-        # Fit TF-IDF to categories
-        corpus = list(category_docs.values())
-        tfidf_matrix = self.vectorizer.fit_transform(corpus)
-        return {
-            category: tfidf_matrix[i].toarray()[0]
-            for i, category in enumerate(THOUGHT_CATEGORIES)
-        }
-    
+        # Thresholds (from config.py)
+        self.salience_thresh = 0.35
+        self.novelty_thresh = 0.25
+        self.relevance_thresh = 0.3
+
     def _calculate_salience(self, thought: str) -> float:
-        """Calculate thought importance score (0-1)"""
+        """Improved salience scoring"""
         score = 0.0
         
-        # Length bonus (longer thoughts are more salient)
+        # Length bonus
         word_count = len(thought.split())
         score += min(0.2, word_count / 50)
         
-        # Keyword bonus
-        lower_thought = thought.lower()
-        for keyword in SALIENT_KEYWORDS:
-            if keyword in lower_thought:
-                score += 0.1
-                break  # Max one keyword bonus
+        # Keyword bonuses
+        keywords = {
+            "why": 0.15, "how": 0.15, "?": 0.2, 
+            r"\b(I|me|my)\b": 0.1
+        }
         
-        # Question bonus
-        if "?" in thought:
-            score += 0.15
-        
-        # Personal pronoun bonus (self-referential)
-        if re.search(r"\b(I|me|my|mine)\b", thought, re.IGNORECASE):
-            score += 0.1
-        
+        for pattern, bonus in keywords.items():
+            if re.search(pattern, thought, re.IGNORECASE):
+                score += bonus
+                
+        # Complete sentence bonus
+        if thought[0].isupper() and thought.endswith(('.','?','!')):
+            score += 0.05
+            
         return min(1.0, score)
-    
-        # after self-reference bonus
-        if thought[0].isupper() and thought.rstrip().endswith('.'):
-            score += 0.05            # <- new: favors complete sentences
 
-    def _calculate_novelty(self, thought: str) -> float:
-      """Compute novelty without refitting the vectorizer."""
-      if not self.recent_thoughts:
-          return 1.0  # first thought → maximally novel
+    def _calculate_novelty(self, embedding: np.ndarray) -> float:
+        """Embedding-based novelty check"""
+        if not self.recent_embeddings:
+            return 1.0
+            
+        similarities = cosine_similarity([embedding], self.recent_embeddings)[0]
+        return 1.0 - np.max(similarities)
 
-      # Vectorize current and previous thought in the existing TF-IDF space
-      vec_new  = self.vectorizer.transform([thought])
-      vec_prev = self.vectorizer.transform([self.recent_thoughts[-1]])
-
-      similarity = cosine_similarity(vec_new, vec_prev)[0][0]
-      return 1.0 - similarity
-
-    
-    def _calculate_relevance(self, thought: str) -> Tuple[float, str]:
-        """Determine relevance to current context and categorize"""
-        thought_vec = self.vectorizer.transform([thought]).toarray()[0]
+    def evaluate(self, thought: str) -> Dict:
+        """Full evaluation pipeline"""
+        embedding = self.embedder.encode([thought])[0]
         
-        best_category = "misc"
-        best_score = 0.0
+        # Update tracking
+        self.recent_embeddings.append(embedding)
+        if len(self.recent_embeddings) > 50:
+            self.recent_embeddings.pop(0)
         
-        # Compare to each category vector
-        for category, cat_vec in self.category_vectors.items():
-            similarity = cosine_similarity([thought_vec], [cat_vec])[0][0]
-            if similarity > best_score:
-                best_score = similarity
-                best_category = category
-        
-        return best_score, best_category
-    
-    def evaluate_thought(self, thought: str) -> Dict:
-        """Comprehensive thought evaluation"""
-        # Update recent thoughts (for novelty calculation)
-        self.recent_thoughts.append(thought)
-        if len(self.recent_thoughts) > 20:
-            self.recent_thoughts.pop(0)
-        
+        # Calculate scores
         salience = self._calculate_salience(thought)
-        novelty = self._calculate_novelty(thought)
-        relevance, category = self._calculate_relevance(thought)
-
-        # tiny boost so feelings & questions pass more often
-        if category in {"curiosity", "emotion"}:
-            salience += 0.05
-
+        novelty = self._calculate_novelty(embedding)
         
         return {
             "raw": thought,
             "salience": salience,
             "novelty": novelty,
-            "relevance": relevance,
-            "category": category,
-            "passes": (
-                salience >= SALIENCE_THRESHOLD and
-                novelty >= NOVELTY_THRESHOLD and
-                relevance >= RELEVANCE_THRESHOLD
-            )
+            "passes": (salience >= self.salience_thresh) 
+                    or (novelty >= self.novelty_thresh)
         }

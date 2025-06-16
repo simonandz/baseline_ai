@@ -1,9 +1,8 @@
-#init conscious
-
+# conscious/__init__.py
 """
 Conscious module package.
-Provides the Conscious class for thought processing.
+Provides the ConsciousProcessor class for thought processing.
 """
-from .mind import Conscious
+from .pipeline import ConsciousProcessor  # Updated import
 
-__all__ = ["Conscious"]
+__all__ = ["ConsciousProcessor"]  # Updated export
