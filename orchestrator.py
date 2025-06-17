@@ -80,6 +80,7 @@ def main():
     
     # Main loop
     last_consolidation = time.time()
+    
     while True:
         # Process thoughts
         if not thought_queue.empty():
@@ -102,6 +103,14 @@ def main():
             last_consolidation = time.time()
             print("Memory consolidation completed")
             
+        # --- curiosity loop every 120 s -------------------------------------
+        if time.time() - last_curiosity > 120:
+            thought_queue.put("What aspect of my environment do I still not understand?")
+            # store an environment snapshot so the agent sees changing context
+            env_fact = f"EnvSnap | unix={int(time.time())} | gpu_temp={torch.cuda.get_device_properties(0).temperature if torch.cuda.is_available() else 'NA'}"
+            mem_manager.add_memory(env_fact, salient_score=0.3)
+            last_curiosity = time.time()
+
         # Small sleep to prevent busy waiting
         time.sleep(0.1)
 

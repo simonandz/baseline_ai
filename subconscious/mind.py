@@ -148,33 +148,59 @@ class Subconscious:
                 self.recent_embeddings.pop(0)
         return False
 
-    def _generate_thought(self) -> Optional[str]:
-        """Generate a concise new thought, retrying on failures or OOM."""
+    def _generate_thought(self) -> Optional[str]:  # noqa: C901  (kept long on purpose)
+        """Generate a concise, *self-reflective* thought (≤20 tokens).
+        If the first draft is not curious enough, run a reflection pass to
+        rewrite it so that it *does* express curiosity about self or
+        environment.
+        """
         ctx = self._get_context()
         prompt = (
-            f"{ctx}\nCurrent time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-            "Generate a concise thought (1 sentence):\nThought:"
+            f"{ctx}\n"
+            f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            "Generate ONE self-reflective thought *or* question about your identity, "
+            "purpose, or surroundings (max-20 tokens). Prefer starting with ‘Why’, "
+            "‘What’, or ‘How’.\nThought:"
         )
-        for _ in range(3):
+
+        # --- first draft ------------------------------------------------------
+        try:
+            draft = self.generator(prompt, **self.generation_config)[0][
+                "generated_text"
+            ].replace(prompt, "").strip().split("\n")[0]
+        except Exception as err:  # fallback on any HF / OOM error
+            logger.error("Generation error: %s", err)
+            return None
+
+        # quick heuristic to detect curiosity
+        def _is_curious(t: str) -> bool:
+            return t.endswith("?") or bool(re.search(r"\b(I|my|me)\b", t, re.I))
+
+        candidate = draft
+        if not _is_curious(candidate):
+            # --- reflection pass (rewrite) ------------------------------------
+            reflect_prompt = (
+                "Rewrite the following thought so that it *asks* a self-reflective "
+                "question about your identity, purpose, feelings, or immediate "
+                "environment in ≤20 tokens.\nOriginal: "
+                f"{candidate}\nRewritten:"
+            )
             try:
-                with torch.inference_mode():
-                    out = self.generator(prompt, **self.generation_config)
-                text = out[0]['generated_text'].replace(prompt, '').strip()
-                candidate = re.split(r'(?<=[.!?])\s+', text)[0]
-                if candidate and not self._is_duplicate(candidate):
-                    return candidate
-            except torch.cuda.OutOfMemoryError:
-                logger.warning("OOM: reducing token budget")
-                torch.cuda.empty_cache()
-                self.generation_config['max_new_tokens'] = max(10, self.generation_config['max_new_tokens'] - 10)
-            except Exception as e:
-                logger.error(f"Generation error: {e}")
-            finally:
-                gc.collect()
-                # Corrected device check
-                if 'cuda' in str(self.device):
-                    torch.cuda.empty_cache()
+                candidate = (
+                    self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
+                    .replace(reflect_prompt, "")
+                    .strip()
+                    .split("\n")[0]
+                )
+            except Exception as err:
+                logger.warning("Reflection pass failed: %s", err)
+                # keep original draft
+
+        # duplicate check -------------------------------------------------------
+        if candidate and not self._is_duplicate(candidate):
+            return candidate
         return None
+
 
     def _run(self):
         """Main loop: generate thoughts at fixed intervals."""

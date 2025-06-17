@@ -21,34 +21,35 @@ class ThoughtFilter:
         self.keywords = ["why", "how", "important", "remember", "idea", 
                          "solution", "problem", "question", "insight"]
 
+# Raise novelty threshold & add explicit bonus for interrogatives.
+# (Replace _calculate_salience with this version.)
+
     def _calculate_salience(self, thought: str) -> float:
-        """Improved salience scoring without problematic regex"""
+        """Salience score with extra weight for explicit questions."""
         score = 0.0
-        
-        # Length bonus
         word_count = len(thought.split())
-        score += min(0.2, word_count / 50)
-        
-        # Question bonus
-        if "?" in thought:
-            score += 0.2
-            
-        # Self-reference bonus - FIXED REGEX
-        if re.search(r"\b(I|me|my|mine)\b", thought, re.IGNORECASE):
-            score += 0.1
-            
-        # Keyword bonus - SIMPLIFIED CHECK
-        lower_thought = thought.lower()
-        for keyword in self.keywords:
-            if keyword in lower_thought:
-                score += 0.1
-                break  # Only add once
-        
-        # Complete sentence bonus
-        if thought and thought[0].isupper() and thought.rstrip()[-1] in {'.', '?', '!'}:
-            score += 0.05
-            
+        score += min(0.25, word_count / 50)  # tiny length bonus
+
+        if thought.strip().endswith("?"):
+            score += 0.20  # curiosity bonus
+
+        if re.search(r"\b(I|me|my|mine)\b", thought, re.I):
+            score += 0.10  # self‑reference bonus
+
+        for kw in self.keywords:
+            if kw in thought.lower():
+                score += 0.10
+                break
+
+        if thought and thought[0].isupper() and thought[-1] in ".?!":
+            score += 0.05  # looks like a complete sentence
+
         return min(1.0, score)
+
+    # Update default thresholds
+    self.salience_thresh = 0.40
+    self.novelty_thresh = 0.35
+
 
     def _calculate_novelty(self, embedding: np.ndarray) -> float:
         """Embedding-based novelty check"""
