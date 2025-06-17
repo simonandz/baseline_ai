@@ -25,26 +25,21 @@ class ThoughtFilter:
 # (Replace _calculate_salience with this version.)
 
     def _calculate_salience(self, thought: str) -> float:
-        """Salience score with extra weight for explicit questions."""
         score = 0.0
-        word_count = len(thought.split())
-        score += min(0.25, word_count / 50)  # tiny length bonus
-
-        if thought.strip().endswith("?"):
-            score += 0.20  # curiosity bonus
-
+        # curiosity: proportion of sentences ending with '?'
+        sentences = re.split(r"(?<=[.!?])\s+", thought)
+        q_count = sum(1 for s in sentences if s.strip().endswith("?"))
+        score += 0.25 * min(1, q_count)          # max +0.25
+        # self‑reference
         if re.search(r"\b(I|me|my|mine)\b", thought, re.I):
-            score += 0.10  # self‑reference bonus
-
-        for kw in self.keywords:
-            if kw in thought.lower():
-                score += 0.10
-                break
-
-        if thought and thought[0].isupper() and thought[-1] in ".?!":
-            score += 0.05  # looks like a complete sentence
-
+            score += 0.10
+        # length bonus (avoid trivial questions)
+        score += min(0.2, len(thought.split()) / 60)
         return min(1.0, score)
+
+    # thresholds inside __init__
+        self.salience_thresh = 0.45
+        self.novelty_thresh  = 0.38
 
 
     def _calculate_novelty(self, embedding: np.ndarray) -> float:

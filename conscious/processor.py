@@ -12,14 +12,11 @@ class ThoughtRefiner:
         )
     
     def refine(self, thought: str, category: str | None = None) -> str:
+        # keep thoughts that already include at least one question and ≤3 sentences
+        if "?" in thought and len(re.split(r"(?<=[.!?])\s+", thought)) <= 3:
+            return thought
         token_len = len(thought.split())
-        # If already concise (<12 words) or ends with '?', keep as‑is.
         if token_len < 12 or thought.strip().endswith("?"):
             return thought
-
-        if category in {"problem_solving", "insight"}:
-            prompt = f"Clarify this insight: {thought}"
-        else:
-            prompt = f"Summarize briefly: {thought}"
-
-        return self.model(prompt, max_length=60, temperature=0.7)[0]["summary_text"]
+        prompt = "Explain this clearly in one sentence: " + thought
+        return self.model(prompt, max_length=60, temperature=0.3)[0]["summary_text"]
