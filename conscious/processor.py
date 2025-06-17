@@ -1,5 +1,6 @@
 # conscious/processor.py
 from transformers import pipeline
+import re
 import torch
 from .config import REFINEMENT_MODEL
 

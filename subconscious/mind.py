@@ -110,13 +110,20 @@ class Subconscious:
         logger.info(f"Subconscious initialized on {self.device}")
 
     def _get_context(self) -> str:
-        """Fetch recent memories up to token limit for prompt context."""
+        """
+        Fetch recent memories up to token limit for prompt context,
+        always pinning the core identity first.
+        """
         if not self.memory:
             return ""
         try:
+            # 1) identity reminder (always first)
+            pinned = "I am Maddie, an AI program running on computer hardware.\n"
+
+            # 2) fetch the most recent memories
             recent = self.memory.get_recent_memories(CONTEXT_WINDOW)
             if not recent:
-                return ""
+                return pinned
 
             lines, total = [], 0
             for mem in recent:
@@ -126,10 +133,13 @@ class Subconscious:
                     break
                 lines.append(text)
                 total += count
-            return "Context:\n" + "\n".join(lines) if lines else ""
+
+            body = "\n".join(lines)
+            return f"Context:\n{pinned}{body}" if lines else f"Context:\n{pinned}"
         except Exception as e:
             logger.error(f"Context error: {e}", exc_info=True)
-            return ""
+            return f"Context:\nI am Maddie, an AI program running on computer hardware."
+
 
     def _is_duplicate(self, thought: str) -> bool:
         """Check semantic similarity against recent embeddings."""
