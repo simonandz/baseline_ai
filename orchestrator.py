@@ -52,7 +52,7 @@ def main():
     subconscious = Subconscious(
         output_queue=thought_queue,
         memory=mem_manager,
-        model_name="EleutherAI/gpt-neo-125M",
+        model_name="microsoft/phi-2",
         device=device
     )
     

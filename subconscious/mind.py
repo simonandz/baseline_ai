@@ -171,7 +171,8 @@ class Subconscious:
                 logger.error(f"Generation error: {e}")
             finally:
                 gc.collect()
-                if 'cuda' in self.device:
+                # Corrected device check
+                if 'cuda' in str(self.device):
                     torch.cuda.empty_cache()
         return None
 
