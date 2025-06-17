@@ -12,7 +12,7 @@ models:
     embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
 
 thresholds:
-  salience: 0.35
-  novelty: 0.25
+  salience: 0.45
+  novelty: 0.38
   relevance: 0.3
   duplicate: 0.85

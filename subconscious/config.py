@@ -16,9 +16,9 @@ DEVICE_MAP = "auto"
 MAX_NEW_TOKENS = 40
 
 # Sampling parameters
-TEMPERATURE = 0.75
-TOP_P = 0.90
-TOP_K = 80
+TEMPERATURE = 0.6
+TOP_P = 0.88
+TOP_K = 60
 
 # How many past memories to include in context
 CONTEXT_WINDOW = 3

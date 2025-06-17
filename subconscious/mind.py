@@ -180,11 +180,11 @@ class Subconscious:
         if not _is_curious(candidate):
             # --- reflection pass (rewrite) ------------------------------------
             reflect_prompt = (
-                "Rewrite the following thought so that it *asks* a self-reflective "
-                "question about your identity, purpose, feelings, or immediate "
-                "environment in ≤20 tokens.\nOriginal: "
-                f"{candidate}\nRewritten:"
+                "Rewrite the following as ONE self-reflective question. "
+                "Do NOT include the words 'summarize', 'rephrase', or 'output'.\n"
+                f"Original: {candidate}\nRewritten:"
             )
+
             try:
                 candidate = (
                     self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
@@ -194,7 +194,11 @@ class Subconscious:
                 )
             except Exception as err:
                 logger.warning("Reflection pass failed: %s", err)
-                # keep original draft
+    
+        #is duplicate check
+        META_PATTERNS = ("summarize briefly", "rephrase concisely", "output:", "rewritten:")
+        if any(p in candidate.lower() for p in META_PATTERNS):
+            return None          # throw it away and wait for the next cycle
 
         # duplicate check -------------------------------------------------------
         if candidate and not self._is_duplicate(candidate):
