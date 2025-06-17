@@ -12,6 +12,8 @@ from memory.manager import MemoryManager
 from memory.preload import initialize_base_knowledge
 from conversation import ConversationBus, Message, Role  # NEW
 
+AGENT_READY = False          # global flag
+
 # --------------------------------------------------------------------------- #
 #  CUDA / logging boilerplate                                                 #
 # --------------------------------------------------------------------------- #
@@ -60,6 +62,9 @@ def main(bus: ConversationBus | None = None) -> None:
 
     subconscious.start()
     print("Subconscious started")
+    global AGENT_READY
+    AGENT_READY = True
+
 
     # ----------------------------------------------------------------------- #
     #  Background console monitor                                             #
