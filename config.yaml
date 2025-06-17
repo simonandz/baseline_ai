@@ -4,7 +4,7 @@ paths:
 
 models:
   subconscious:
-    model_name: "EleutherAI/gpt-neo-2.7B"
+    model_name: "microsoft/phi-2"
     torch_dtype: "float16"  # Required for larger models
     device_map: "auto"      # Helps with memory management
   conscious:
