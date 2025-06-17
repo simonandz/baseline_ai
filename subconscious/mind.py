@@ -68,7 +68,6 @@ class Subconscious:
             "text-generation",
             model=self.model,
             tokenizer=self.tokenizer,
-            device=self.device
         )
         
         # Generation parameters
