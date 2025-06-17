@@ -99,25 +99,32 @@ class Subconscious:
             return ""
 
     def _is_duplicate(self, thought: str) -> bool:
-        """Checks for semantic similarity with recent thoughts"""
+        """True if new thought is semantically too close to recent history."""
         if not thought.strip():
             return True
-            
+
+        # ----- embed the candidate -----
+        emb = self.embedder.encode(thought, convert_to_tensor=False)  # 1-D np.array
+        emb = np.asarray(emb).reshape(1, -1)                          # 2-D row
+
         with self._lock:
-            embedding = self.embedder.encode([thought], convert_to_tensor=True)
-            
             if self.recent_embeddings:
-                similarities = cosine_similarity(
-                    embedding.cpu().numpy().reshape(1, -1),
-                    np.array([e.cpu().numpy() for e in self.recent_embeddings])
-                )
-                if np.max(similarities) > self.similarity_threshold:
+                # stack history into a clean (N, dim) matrix
+                hist = np.vstack(self.recent_embeddings)              # 2-D
+
+                # cosine similarity: returns (1, N) — flatten to 1-D
+                sims = cosine_similarity(emb, hist)[0]
+
+                if sims.max() >= self.similarity_threshold:
                     return True
-                    
-            self.recent_embeddings.append(embedding)
+
+            # store *flat* 1-D copy to avoid 3-D stacks next time
+            self.recent_embeddings.append(emb.flatten())
             if len(self.recent_embeddings) > self.max_embedding_history:
                 self.recent_embeddings.pop(0)
-            return False
+
+        return False
+
 
     def _generate_thought(self) -> Optional[str]:
         """Generates a novel thought with context awareness"""

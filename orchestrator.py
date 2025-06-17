@@ -1,8 +1,8 @@
-# orchestrator.py - Updated Version
 import torch
 import time
 import os
 import queue
+import threading  # ADD THIS IMPORT
 from conscious.pipeline import ConsciousProcessor
 from subconscious import Subconscious
 from memory.manager import MemoryManager
@@ -37,9 +37,6 @@ def main():
     # Print core identity
     print(f"\n{'='*40}")
     print(f"AI Identity: Maddie")
-    
-    # Get identity from base knowledge instead of memory manager
-    # (Assuming initialize_base_knowledge prints identity)
     identity = [
         "I am Maddie, an artificial intelligence system designed to simulate human thought processes."
     ]
@@ -62,25 +59,25 @@ def main():
     # Start system
     subconscious.start()
     print("Subconscious started")
-
-    # In orchestrator.py after subconscious.start()
+    
+    # Define monitor function
     def monitor_subconscious():
         """Real-time display of subconscious thoughts"""
-        print("\nSubconscious Monitor Active - Press Ctrl+C to stop")
+        print("\nSubconscious Monitor Active")
         try:
             while True:
                 if not thought_queue.empty():
                     thought = thought_queue.get()
                     print(f"🧠 [{time.strftime('%H:%M:%S')}] {thought}")
-                    thought_queue.task_done()  # Important to mark as processed
+                    thought_queue.task_done()
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("Monitoring stopped")
-
-    # Start in a separate thread
+    
+    # Start monitor thread
     monitor_thread = threading.Thread(target=monitor_subconscious, daemon=True)
     monitor_thread.start()
-
+    
     # Main loop
     last_consolidation = time.time()
     while True:
@@ -96,12 +93,12 @@ def main():
                 # Store as observation
                 mem_manager.add_memory(
                     content=refined,
-                    salient_score=result.get("salience", 0.5)  # Changed parameter name
+                    salient_score=result.get("salience", 0.5)
                 )
         
         # Periodically consolidate memories
         if time.time() - last_consolidation > 3600:  # Every hour
-            mem_manager.consolidate_memory()  # Changed method name
+            mem_manager.consolidate_memory()
             last_consolidation = time.time()
             print("Memory consolidation completed")
             
