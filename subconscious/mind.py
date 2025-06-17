@@ -2,12 +2,14 @@ import threading
 import time
 import numpy as np
 import torch
+import re
+import gc
+import logging
+from typing import Optional
+from datetime import datetime
+from queue import Queue
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
-from datetime import datetime
-import logging
-import queue
-from typing import Optional
 from sklearn.metrics.pairwise import cosine_similarity
 
 # Configure logging
@@ -17,170 +19,216 @@ logger.setLevel(logging.INFO)
 class Subconscious:
     def __init__(
         self,
-        output_queue: queue.Queue,
+        output_queue: Queue,
         memory=None,
         model_name: str = "EleutherAI/gpt-neo-1.3B",
         interval: float = 3.0,
-        device: torch.device = None  # Add device parameter
+        device: Optional[torch.device] = None,
+        max_embedding_history: int = 100,
+        similarity_threshold: float = 0.85
     ):
         """
-        Continuous thought generator
+        Enhanced continuous thought generator with improved error handling
         
         Args:
-            output_queue: Queue to send thoughts to conscious module
+            output_queue: Thread-safe queue for thought output
             memory: MemoryManager instance for context
             model_name: HF model identifier
             interval: Seconds between thought generation
+            device: Explicit device specification
+            max_embedding_history: Size of recent thought embedding cache
+            similarity_threshold: Semantic similarity threshold for duplicates
         """
         self.queue = output_queue
         self.memory = memory
         self.interval = interval
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        self._lock = threading.Lock()
         
-        # Models
+        # Configure device
+        self.device = device if device else "cuda:0" if torch.cuda.is_available() else "cpu"
+        
+        # Initialize models
         logger.info("Loading embedding model...")
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embedder = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
         
         logger.info(f"Loading generator: {model_name}")
         self.generator = pipeline(
             "text-generation",
             model=model_name,
-            device=device if device else 0 if torch.cuda.is_available() else -1,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            device=self.device,
+            torch_dtype=torch.float16 if "cuda" in str(self.device) else torch.float32
         )
+        self.generator.model.config.max_length = 128
+        self.generator.model.config.pad_token_id = self.generator.tokenizer.eos_token_id
         
-        # State
+        # State management
         self.recent_embeddings = []
         self.thought_count = 0
-        logger.info("Subconscious initialized")
+        self.max_embedding_history = max_embedding_history
+        self.similarity_threshold = similarity_threshold
+        logger.info(f"Subconscious initialized on {self.device}")
 
     def _get_context(self) -> str:
-        """Get relevant context from memory"""
+        """Safely retrieves and formats context from memory"""
         if not self.memory:
             return ""
         
         try:
             recent = self.memory.get_recent_memories(2)
-            return "Recent memories:\n" + "\n".join(recent) if recent else ""
+            if not recent:
+                return ""
+            
+            # Handle both dict and string memory items
+            context_lines = []
+            for mem in recent:
+                if isinstance(mem, dict):
+                    if 'content' in mem:
+                        context_lines.append(mem['content'])
+                    elif 'text' in mem:
+                        context_lines.append(mem['text'])
+                    else:
+                        context_lines.append(str(mem))
+                else:
+                    context_lines.append(str(mem))
+            
+            return "Recent memories:\n" + "\n".join(context_lines)
         except Exception as e:
-            logger.error(f"Context error: {e}")
+            logger.error(f"Context error: {e}", exc_info=True)
             return ""
 
     def _is_duplicate(self, thought: str) -> bool:
-        """Check if thought is semantically similar to recent ones"""
+        """Checks for semantic similarity with recent thoughts"""
         if not thought.strip():
             return True
             
-        embedding = self.embedder.encode([thought])[0]
-        
-        if self.recent_embeddings:
-            # Convert to numpy array for sklearn
-            embeddings_array = np.array(self.recent_embeddings)
+        with self._lock:
+            embedding = self.embedder.encode([thought], convert_to_tensor=True)
             
-            # Calculate similarity - note: cosine_similarity expects 2D arrays
-            similarities = cosine_similarity(
-                [embedding],  # Query embedding (1 x D)
-                embeddings_array  # Recent embeddings (N x D)
-            )
-            
-            if np.max(similarities) > 0.85:  # Similarity threshold
-                return True
-                
-        self.recent_embeddings.append(embedding)
-        if len(self.recent_embeddings) > 100:  # Keep last 100 embeddings
-            self.recent_embeddings.pop(0)
-        return False
+            if self.recent_embeddings:
+                similarities = cosine_similarity(
+                    embedding.cpu().numpy().reshape(1, -1),
+                    np.array([e.cpu().numpy() for e in self.recent_embeddings])
+                )
+                if np.max(similarities) > self.similarity_threshold:
+                    return True
+                    
+            self.recent_embeddings.append(embedding)
+            if len(self.recent_embeddings) > self.max_embedding_history:
+                self.recent_embeddings.pop(0)
+            return False
 
     def _generate_thought(self) -> Optional[str]:
-        """Generate one thought with context awareness"""
+        """Generates a novel thought with context awareness"""
         context = self._get_context()
         prompt = f"""
         {context}
         Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-        Generate a novel, concise thought (1 sentence) about:
+        Generate a concise, single-sentence thought about:
         - Current context if relevant
         - Or an interesting observation
+        Avoid repeating recent thoughts.
         Thought:"""
         
-        for attempt in range(3):  # Retry up to 3 times
+        for attempt in range(3):
             try:
                 result = self.generator(
                     prompt,
                     max_new_tokens=40,
                     temperature=0.8,
                     do_sample=True,
+                    num_return_sequences=1,
                     pad_token_id=self.generator.tokenizer.eos_token_id
                 )
-                raw_thought = result[0]['generated_text'].replace(prompt, "").strip()
                 
-                # Extract first complete sentence
-                if '.' in raw_thought:
-                    thought = raw_thought.split('.')[0] + '.'
-                elif '?' in raw_thought:
-                    thought = raw_thought.split('?')[0] + '?'
-                else:
-                    thought = raw_thought
+                raw_thought = result[0]['generated_text'].replace(prompt, "").strip()
+                sentences = re.split(r'(?<=[.!?])\s+', raw_thought)
+                thought = sentences[0] if sentences else raw_thought
                 
                 if thought and not self._is_duplicate(thought):
                     return thought
                     
             except torch.cuda.OutOfMemoryError:
-                logger.warning("CUDA OOM - reducing batch size")
+                logger.warning("CUDA OOM - reducing memory usage")
                 torch.cuda.empty_cache()
+                self.generator.model.config.max_length = max(
+                    64, self.generator.model.config.max_length // 2
+                )
             except Exception as e:
                 logger.error(f"Generation error (attempt {attempt+1}): {e}")
+            finally:
+                gc.collect()
+                torch.cuda.empty_cache()
         
         return None
 
     def _run(self):
-        """Main generation loop"""
+        """Main generation loop with enhanced resilience"""
         logger.info("Subconscious thread started")
         while not self._stop_event.is_set():
             try:
                 thought = self._generate_thought()
                 if thought:
-                    self.queue.put(thought)
-                    self.thought_count += 1
+                    with self._lock:
+                        self.queue.put(thought)
+                        self.thought_count += 1
                     logger.debug(f"Generated thought #{self.thought_count}: {thought}")
             except Exception as e:
-                logger.error(f"Runtime error: {e}")
+                logger.error(f"Runtime error: {e}", exc_info=True)
+                time.sleep(5)  # Backoff on error
             
             time.sleep(self.interval)
         logger.info("Subconscious thread stopped")
 
     def start(self):
-        """Start the generation thread"""
-        self._thread.start()
+        """Starts the generation thread"""
+        if not self._thread.is_alive():
+            self._thread.start()
+        else:
+            logger.warning("Subconscious thread already running")
 
     def stop(self):
-        """Stop the generation thread"""
+        """Gracefully stops the generation thread"""
         self._stop_event.set()
-        self._thread.join()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
         logger.info("Subconscious stopped")
 
-# Test code must come AFTER the class definition
+    def __del__(self):
+        """Cleanup on deletion"""
+        self.stop()
+        torch.cuda.empty_cache()
+
+
+# Test harness
 if __name__ == "__main__":
+    from queue import Queue
     import time
-    import queue
     
-    print("Running subconscious test...")
-    test_q = queue.Queue()
+    class MockMemory:
+        def get_recent_memories(self, n):
+            return [
+                {"content": "Remembered meeting with team yesterday"},
+                "Scheduled project review for tomorrow"
+            ]
     
-    # Initialize with test queue
-    sub = Subconscious(output_queue=test_q)
+    print("Running enhanced subconscious test...")
+    test_q = Queue()
+    mock_memory = MockMemory()
     
-    # Start generation
+    sub = Subconscious(
+        output_queue=test_q,
+        memory=mock_memory,
+        model_name="EleutherAI/gpt-neo-125M",  # Smaller model for testing
+        interval=2.0
+    )
+    
     sub.start()
-    print("Generation started (10 seconds)...")
-    
-    # Let it run for 10 seconds
+    print("Generation running for 10 seconds...")
     time.sleep(10)
     
-    # Stop and show results
     sub.stop()
     print(f"\nTest complete. Generated {test_q.qsize()} thoughts:")
-    
-    # Print the generated thoughts
     while not test_q.empty():
         print(f" - {test_q.get()}")

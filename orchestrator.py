@@ -1,6 +1,10 @@
 # Add to the top of orchestrator.py
 import torch
+import time  # Add this with other imports
 import os
+import queue  # <-- Add this line at the top
+from conscious.pipeline import ConsciousProcessor
+from subconscious import Subconscious  # Note: capital S
 
 # Resolve CUDA initialization conflicts
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
@@ -39,7 +43,7 @@ def main():
     print(f"{'='*40}\n")
     
     # Initialize other components
-    thought_queue = queue.Queue(maxsize=100)
+    thought_queue = queue.Queue(maxsize=100)  # Now works with the import
     processor = ConsciousProcessor()
     
     # In orchestrator.py, modify the Subconscious initialization
@@ -54,6 +58,7 @@ def main():
     subconscious.start()
     
     # Main loop
+    last_consolidation = time.time()  # Initialize with current time
     while True:
         if not thought_queue.empty():
             thought = thought_queue.get()
