@@ -4,9 +4,9 @@ paths:
 
 models:
   subconscious:
-    name: "EleutherAI/gpt-neo-125M"  # Smaller default model
-    max_tokens: 40
-    temperature: 0.8
+    model_name: "EleutherAI/gpt-neo-2.7B"
+    torch_dtype: "float16"  # Required for larger models
+    device_map: "auto"      # Helps with memory management
   conscious:
     refinement_model: "facebook/bart-large"
     embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
