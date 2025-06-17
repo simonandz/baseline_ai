@@ -12,11 +12,11 @@ from memory.manager import MemoryManager
 from memory.preload import initialize_base_knowledge
 from conversation import ConversationBus, Message, Role  # NEW
 
-AGENT_READY = False          # global flag
+AGENT_READY = False  # global ready flag
 
-# --------------------------------------------------------------------------- #
-#  CUDA / logging boilerplate                                                 #
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+#  CUDA / logging boilerplate                                                   
+# ---------------------------------------------------------------------------- #
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -32,26 +32,27 @@ else:
     device = torch.device("cpu")
     print("Using CPU")
 
-# --------------------------------------------------------------------------- #
-#  MAIN                                                                       #
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+#  MAIN                                                                        
+# ---------------------------------------------------------------------------- #
 def main(bus: ConversationBus | None = None) -> None:
-    # ----------------------------------------------------------------------- #
-    #  Initialise shared resources                                            #
-    # ----------------------------------------------------------------------- #
+    # 1) Setup bus
     if bus is None:
         bus = ConversationBus()
 
+    # 2) Init memory
     mem_manager = MemoryManager()
     initialize_base_knowledge(mem_manager)
 
+    # 3) Print identity
     print("\n" + "=" * 40)
     print("AI Identity: Maddie")
     print("- I am Maddie, an artificial intelligence system designed to simulate human thought processes.")
     print("=" * 40 + "\n")
 
-    thought_queue: queue.Queue[str] = queue.Queue(maxsize=100)
-    processor   = ConsciousProcessor()
+    # 4) Components
+    thought_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=100)
+    processor = ConsciousProcessor()
 
     subconscious = Subconscious(
         output_queue=thought_queue,
@@ -60,62 +61,64 @@ def main(bus: ConversationBus | None = None) -> None:
         device=device,
     )
 
+    # 5) Start subconscious
     subconscious.start()
     print("Subconscious started")
     global AGENT_READY
     AGENT_READY = True
 
-
-    # ----------------------------------------------------------------------- #
-    #  Background console monitor                                             #
-    # ----------------------------------------------------------------------- #
-    def monitor_subconscious() -> None:
+    # ---------------------------------------------------------------------------- #
+    #  Console monitor (prints only AI thoughts)                                    
+    # ---------------------------------------------------------------------------- #
+    def monitor_subconscious():
         print("\nSubconscious Monitor Active")
         while True:
             if not thought_queue.empty():
-                t = thought_queue.get()
-                ts = datetime.now().strftime("%H:%M:%S")
-                print(f"🧠 [{ts}] {t}")
+                who, txt = thought_queue.get()
                 thought_queue.task_done()
+                if who == "AI":
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    print(f"🧠 [{ts}] {txt}")
             time.sleep(0.1)
 
     threading.Thread(target=monitor_subconscious, daemon=True).start()
 
-    # ----------------------------------------------------------------------- #
-    #  Main event loop                                                        #
-    # ----------------------------------------------------------------------- #
+    # ---------------------------------------------------------------------------- #
+    #  Main loop                                                                   
+    # ---------------------------------------------------------------------------- #
     last_consolidation = time.time()
     last_curiosity     = time.time()
 
     while True:
-        # 1) ─── ingest USER messages ────────────────────────────────────────
+        # A) Ingest user messages
         if not bus.incoming.empty():
             msg = bus.incoming.get()
+            # store user line
             mem_manager.add_memory(f"[USER] {msg.text}", salient_score=0.6)
-            thought_queue.put(msg.text)           # surface to subconscious
+            # surface to subconscious
+            thought_queue.put(("USER", msg.text))
 
-        # 2) ─── process a subconscious thought ─────────────────────────────
+        # B) Process AI thoughts only
         if not thought_queue.empty():
-            thought = thought_queue.get()
-            result  = processor.process(thought)
+            who, thought = thought_queue.get()
+            thought_queue.task_done()
+            if who == "AI":
+                result = processor.process(thought)
+                if result.get("passes", False):
+                    refined = result.get("refined", thought)
+                    print(f"💭 {refined}")
+                    mem_manager.add_memory(refined, salient_score=result.get("salience", 0.5))
+                    bus.outgoing.put(Message(Role.AGENT, refined, time.time()))
 
-            if result.get("passes", False):
-                refined = result.get("refined", thought)
-                print(f"💭 {refined}")
-
-                mem_manager.add_memory(refined, salient_score=result.get("salience", 0.5))
-                bus.outgoing.put(Message(Role.AGENT, refined, time.time()))
-
-        # 3) ─── periodic memory consolidation ──────────────────────────────
-        if time.time() - last_consolidation > 3600:  # every hour
+        # C) Periodic memory consolidation (hourly)
+        if time.time() - last_consolidation > 3600:
             mem_manager.consolidate_memory()
             last_consolidation = time.time()
             print("Memory consolidation completed")
 
-        # 4) ─── curiosity injection every 120 s ────────────────────────────
+        # D) Curiosity injection (every 120s)
         if time.time() - last_curiosity > 120:
-            thought_queue.put("What aspect of my environment do I still not understand?")
-
+            thought_queue.put(("AI", "What aspect of my environment do I still not understand?"))
             if torch.cuda.is_available():
                 props     = torch.cuda.get_device_properties(0)
                 gpu_name  = props.name
@@ -123,13 +126,12 @@ def main(bus: ConversationBus | None = None) -> None:
                 env_fact  = f"EnvSnap | unix={int(time.time())} | gpu={gpu_name} | vram={gpu_memGB}GB"
             else:
                 env_fact  = f"EnvSnap | unix={int(time.time())}"
-
             mem_manager.add_memory(env_fact, salient_score=0.3)
             last_curiosity = time.time()
 
         time.sleep(0.1)
 
 
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 if __name__ == "__main__":
     main()

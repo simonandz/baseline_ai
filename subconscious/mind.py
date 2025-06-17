@@ -220,7 +220,7 @@ class Subconscious:
             thought = self._generate_thought()
             if thought:
                 with self._lock:
-                    self.queue.put(thought)
+                    self.queue.put("AI",thought)
                     self.thought_count += 1
                 logger.debug(f"Thought #{self.thought_count}: {thought}")
             elapsed = time.time() - start
