@@ -15,7 +15,7 @@ from transformers import pipeline
 
 _chat = pipeline(
     "text-generation",
-    model="microsoft/phi-2",
+    model="distilgpt2",
     max_new_tokens=60,
     temperature=0.6,
     top_p=0.9,
