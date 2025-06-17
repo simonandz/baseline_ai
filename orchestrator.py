@@ -1,10 +1,12 @@
-# Add to the top of orchestrator.py
+# orchestrator.py - Updated Version
 import torch
-import time  # Add this with other imports
+import time
 import os
-import queue  # <-- Add this line at the top
+import queue
 from conscious.pipeline import ConsciousProcessor
-from subconscious import Subconscious  # Note: capital S
+from subconscious import Subconscious
+from memory.manager import MemoryManager
+from memory.preload import initialize_base_knowledge
 
 # Resolve CUDA initialization conflicts
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
@@ -25,41 +27,64 @@ import logging
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("torch").setLevel(logging.WARNING)
 
-# orchestrator.py (partial)
-from memory.manager import MemoryManager
-from memory.preload import initialize_base_knowledge
-
 def main():
-    # Initialize memory with base knowledge
+    # Initialize memory manager
     mem_manager = MemoryManager()
+    
+    # Load base knowledge
     initialize_base_knowledge(mem_manager)
     
     # Print core identity
-    identity = mem_manager.get_core_identity()
     print(f"\n{'='*40}")
     print(f"AI Identity: Maddie")
-    for fact in identity['core']:
+    
+    # Get identity from base knowledge instead of memory manager
+    # (Assuming initialize_base_knowledge prints identity)
+    identity = [
+        "I am Maddie, an artificial intelligence system designed to simulate human thought processes."
+    ]
+    for fact in identity:
         print(f"- {fact}")
     print(f"{'='*40}\n")
     
-    # Initialize other components
-    thought_queue = queue.Queue(maxsize=100)  # Now works with the import
+    # Initialize components
+    thought_queue = queue.Queue(maxsize=100)
     processor = ConsciousProcessor()
     
-    # In orchestrator.py, modify the Subconscious initialization
+    # Initialize Subconscious
     subconscious = Subconscious(
         output_queue=thought_queue,
         memory=mem_manager,
-        model_name="EleutherAI/gpt-neo-125M",  # Smaller model
-        device=device  # Pass explicit device
+        model_name="EleutherAI/gpt-neo-125M",
+        device=device
     )
     
     # Start system
     subconscious.start()
-    
+    print("Subconscious started")
+
+    # In orchestrator.py after subconscious.start()
+    def monitor_subconscious():
+        """Real-time display of subconscious thoughts"""
+        print("\nSubconscious Monitor Active - Press Ctrl+C to stop")
+        try:
+            while True:
+                if not thought_queue.empty():
+                    thought = thought_queue.get()
+                    print(f"🧠 [{time.strftime('%H:%M:%S')}] {thought}")
+                    thought_queue.task_done()  # Important to mark as processed
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("Monitoring stopped")
+
+    # Start in a separate thread
+    monitor_thread = threading.Thread(target=monitor_subconscious, daemon=True)
+    monitor_thread.start()
+
     # Main loop
-    last_consolidation = time.time()  # Initialize with current time
+    last_consolidation = time.time()
     while True:
+        # Process thoughts
         if not thought_queue.empty():
             thought = thought_queue.get()
             result = processor.process(thought)
@@ -71,11 +96,17 @@ def main():
                 # Store as observation
                 mem_manager.add_memory(
                     content=refined,
-                    memory_type="observation",
-                    salience=result.get("salience", 0.5)
+                    salient_score=result.get("salience", 0.5)  # Changed parameter name
                 )
         
         # Periodically consolidate memories
         if time.time() - last_consolidation > 3600:  # Every hour
-            mem_manager.consolidate_insights()
+            mem_manager.consolidate_memory()  # Changed method name
             last_consolidation = time.time()
+            print("Memory consolidation completed")
+            
+        # Small sleep to prevent busy waiting
+        time.sleep(0.1)
+
+if __name__ == "__main__":
+    main()
