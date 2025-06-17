@@ -303,38 +303,3 @@ class MemoryManager:
 
     def __del__(self):
         self.close()
-
-
-# Test function
-if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    
-    print("Testing MemoryManager...")
-    mm = MemoryManager(":memory:")  # In-memory DB for testing
-    
-    # Test adding memories
-    mm.add_memory("The sky is blue today", 0.7)
-    mm.add_memory("I enjoy walking in the park", 0.9)
-    mm.add_memory("Programming requires logical thinking", 0.8)
-    
-    # Test retrieval
-    print("\nRecent memories:")
-    print(mm.get_recent_memories())
-    
-    # Test semantic search
-    print("\nSemantic search for 'nature':")
-    results = mm.semantic_search("nature")
-    for res in results:
-        print(f"{res['similarity']:.3f}: {res['content']}")
-    
-    # Test consolidation
-    print("\nMemory consolidation:")
-    summaries = mm.consolidate_memory(force=True)
-    for summary in summaries:
-        print(f"- {summary}")
-    
-    # Test feedback
-    mm.add_feedback(1, "positive", "Relevant observation")
-    
-    print("\nMemoryManager test complete!")

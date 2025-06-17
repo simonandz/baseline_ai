@@ -110,20 +110,13 @@ class Subconscious:
         logger.info(f"Subconscious initialized on {self.device}")
 
     def _get_context(self) -> str:
-        """
-        Fetch recent memories up to token limit for prompt context,
-        always pinning the core identity first.
-        """
+        """Fetch recent memories up to token limit for prompt context."""
         if not self.memory:
             return ""
         try:
-            # 1) identity reminder (always first)
-            pinned = "I am Maddie, an AI program running on computer hardware.\n"
-
-            # 2) fetch the most recent memories
             recent = self.memory.get_recent_memories(CONTEXT_WINDOW)
             if not recent:
-                return pinned
+                return ""
 
             lines, total = [], 0
             for mem in recent:
@@ -133,13 +126,10 @@ class Subconscious:
                     break
                 lines.append(text)
                 total += count
-
-            body = "\n".join(lines)
-            return f"Context:\n{pinned}{body}" if lines else f"Context:\n{pinned}"
+            return "Context:\n" + "\n".join(lines) if lines else ""
         except Exception as e:
             logger.error(f"Context error: {e}", exc_info=True)
-            return f"Context:\nI am Maddie, an AI program running on computer hardware."
-
+            return ""
 
     def _is_duplicate(self, thought: str) -> bool:
         """Check semantic similarity against recent embeddings."""
@@ -158,59 +148,68 @@ class Subconscious:
                 self.recent_embeddings.pop(0)
         return False
 
-    def _generate_thought(self) -> Optional[str]:
-        """Generate a *dynamic* train‑of‑thought (2–3 sentences).
-
-        • Sentence 1 → self‑reflective question about identity, purpose, or current
-          environment.
-        • Sentence 2 (optional) → concise answer, hypothesis, or admission of
-          uncertainty.
-        • Sentence 3 (optional) → follow‑up question or next step.
-
-        The prompt also injects an identity reminder so the model won’t claim to
-        be human. We accept variable sentence counts; no template tags are
-        required.
+    def _generate_thought(self) -> Optional[str]:  # noqa: C901
+        """Generate a concise, *self-reflective* thought (≤20 tokens).
+        If the first draft is not curious enough, run a reflection pass to
+        rewrite it so that it *does* express curiosity about self or
+        environment.
         """
-
-        # ---------------- context & identity ---------------------------------
         ctx = self._get_context()
-        identity_msg = (
-            "System identity: You are an *artificial‑intelligence* program executing "
-            "inside a Python process on "+
-            (f"GPU ({torch.cuda.get_device_name(0)})" if torch.cuda.is_available() else "CPU")+
-            ". You have no body and are not human.\n"
-        )
-
         prompt = (
-            f"{identity_msg}{ctx}\nUTC time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}\n"
-            "Write a brief train of thought (2–3 sentences). Start with a self‑reflective "
-            "question. You may answer partially or say you don't know. You may end with "
-            "a follow‑up question. Do NOT use the words 'summarise', 'rephrase' or 'output'.\n"
-            "Thought:"
+            f"{ctx}\n"
+            f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            "Generate ONE self-reflective thought *or* question about your identity, "
+            "purpose, or surroundings (max-20 tokens). Prefer starting with ‘Why’, "
+            "‘What’, or ‘How’.\nThought:"
         )
 
+        # --- first draft ------------------------------------------------------
         try:
-            raw = self.generator(prompt, **self.generation_config)[0]["generated_text"]
-            candidate = raw.replace(prompt, "").strip()
-        except Exception as err:
+            draft = self.generator(prompt, **self.generation_config)[0][
+                "generated_text"
+            ].replace(prompt, "").strip().split("\n")[0]
+        except Exception as err:  # fallback on any HF / OOM error
             logger.error("Generation error: %s", err)
             return None
 
-        # quick checks --------------------------------------------------------
-        bad_phrases = ("summarize", "rephrase", "output:")
-        if any(p in candidate.lower() for p in bad_phrases):
+        # quick heuristic to detect curiosity
+        def _is_curious(t: str) -> bool:
+            return t.endswith("?") or bool(re.search(r"\b(I|my|me)\b", t, re.I))
+
+        candidate = draft
+        if not _is_curious(candidate):
+            # --- reflection pass (rewrite) ------------------------------------
+            reflect_prompt = (
+                "Rewrite the following as ONE self-reflective question. "
+                "Do NOT include the words 'summarize', 'rephrase', or 'output'.\n"
+                f"Original: {candidate}\nRewritten:"
+            )
+
+            try:
+                candidate = (
+                    self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
+                    .replace(reflect_prompt, "")
+                    .strip()
+                    .split("\n")[0]
+                )
+            except Exception as err:
+                logger.warning("Reflection pass failed: %s", err)
+
+        # ───── NEW GUARD ───────────────────────────────────────────
+        # discard too-short outputs like "AI", "Yes", "Hello"
+        if len(candidate.split()) < 3:
             return None
-        # must contain at least one '?'
-        if "?" not in candidate:
-            return None
-        # duplicate suppression
-        if self._is_duplicate(candidate):
+        # ───────────────────────────────────────────────────────────
+
+        # META patterns to drop
+        META_PATTERNS = ("summarize briefly", "rephrase concisely", "output:", "rewritten:")
+        if any(p in candidate.lower() for p in META_PATTERNS):
             return None
 
-        # limit to 3 sentences max (split on ., !, ?)
-        sentences = re.split(r"(?<=[.!?])\s+", candidate)[:3]
-        candidate = " ".join(sentences).strip()
-        return candidate if candidate else None
+        # duplicate check -------------------------------------------------------
+        if candidate and not self._is_duplicate(candidate):
+            return candidate
+        return None
 
     def _run(self):
         """Main loop: generate thoughts at fixed intervals."""
@@ -220,7 +219,8 @@ class Subconscious:
             thought = self._generate_thought()
             if thought:
                 with self._lock:
-                    self.queue.put("AI",thought)
+                    # tag as AI and emit
+                    self.queue.put(("AI", thought))
                     self.thought_count += 1
                 logger.debug(f"Thought #{self.thought_count}: {thought}")
             elapsed = time.time() - start

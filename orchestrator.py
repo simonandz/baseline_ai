@@ -10,9 +10,28 @@ from conscious.pipeline import ConsciousProcessor
 from subconscious import Subconscious
 from memory.manager import MemoryManager
 from memory.preload import initialize_base_knowledge
-from conversation import ConversationBus, Message, Role  # NEW
+from conversation import ConversationBus, Message, Role
+from transformers import pipeline
 
-AGENT_READY = False  # global ready flag
+_chat = pipeline(
+    "text-generation",
+    model="microsoft/phi-2",
+    max_new_tokens=60,
+    temperature=0.6,
+    top_p=0.9,
+)
+
+def respond_to_user(user_text: str) -> str:
+    prompt = (
+        "You are Maddie, an AI conversing with a human.\n"
+        f"Human: {user_text}\n"
+        "Maddie:"
+    )
+    out = _chat(prompt)[0]["generated_text"].replace(prompt, "").strip()
+    return out.split("\n")[0]  # first line
+
+
+AGENT_READY = False  # flips True once models finish loading
 
 # ---------------------------------------------------------------------------- #
 #  CUDA / logging boilerplate                                                   
@@ -36,24 +55,25 @@ else:
 #  MAIN                                                                        
 # ---------------------------------------------------------------------------- #
 def main(bus: ConversationBus | None = None) -> None:
+    global AGENT_READY
+
     # 1) Setup bus
     if bus is None:
         bus = ConversationBus()
 
-    # 2) Init memory
+    # 2) Initialize memory
     mem_manager = MemoryManager()
     initialize_base_knowledge(mem_manager)
 
-    # 3) Print identity
+    # 3) Identity banner
     print("\n" + "=" * 40)
     print("AI Identity: Maddie")
     print("- I am Maddie, an artificial intelligence system designed to simulate human thought processes.")
     print("=" * 40 + "\n")
 
-    # 4) Components
-    thought_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=100)
+    # 4) Prepare queue & processors
+    thought_queue: queue.Queue[str | tuple[str, str]] = queue.Queue(maxsize=100)
     processor = ConsciousProcessor()
-
     subconscious = Subconscious(
         output_queue=thought_queue,
         memory=mem_manager,
@@ -64,18 +84,19 @@ def main(bus: ConversationBus | None = None) -> None:
     # 5) Start subconscious
     subconscious.start()
     print("Subconscious started")
-    global AGENT_READY
     AGENT_READY = True
 
     # ---------------------------------------------------------------------------- #
-    #  Console monitor (prints only AI thoughts)                                    
+    #  Monitor thread – prints only AI-generated thoughts                           
     # ---------------------------------------------------------------------------- #
     def monitor_subconscious():
         print("\nSubconscious Monitor Active")
         while True:
             if not thought_queue.empty():
-                who, txt = thought_queue.get()
+                item = thought_queue.get()
                 thought_queue.task_done()
+                # interpret plain string as AI
+                who, txt = (item if isinstance(item, tuple) else ("AI", item))
                 if who == "AI":
                     ts = datetime.now().strftime("%H:%M:%S")
                     print(f"🧠 [{ts}] {txt}")
@@ -84,39 +105,42 @@ def main(bus: ConversationBus | None = None) -> None:
     threading.Thread(target=monitor_subconscious, daemon=True).start()
 
     # ---------------------------------------------------------------------------- #
-    #  Main loop                                                                   
+    #  Main loop – ingest user, process AI thoughts                                
     # ---------------------------------------------------------------------------- #
     last_consolidation = time.time()
     last_curiosity     = time.time()
 
     while True:
-        # A) Ingest user messages
+        # A) ingest USER messages
         if not bus.incoming.empty():
             msg = bus.incoming.get()
-            # store user line
-            mem_manager.add_memory(f"[USER] {msg.text}", salient_score=0.6)
-            # surface to subconscious
-            thought_queue.put(("USER", msg.text))
 
-        # B) Process AI thoughts only
+            # 1. store in memory (but DO NOT send to thought_queue)
+            mem_manager.add_memory(f"[USER] {msg.text}", 0.8)
+
+            # 2. immediate conversational reply
+            reply = respond_to_user(msg.text)          # ← new helper (see below)
+            bus.outgoing.put(Message(Role.AGENT, reply, time.time()))
+            print("💬", reply)                         # optional console echo
+
+        # B) process AI-generated subconscious thoughts
         if not thought_queue.empty():
-            who, thought = thought_queue.get()
-            thought_queue.task_done()
-            if who == "AI":
-                result = processor.process(thought)
-                if result.get("passes", False):
-                    refined = result.get("refined", thought)
-                    print(f"💭 {refined}")
-                    mem_manager.add_memory(refined, salient_score=result.get("salience", 0.5))
+            item = thought_queue.get(); thought_queue.task_done()
+            if isinstance(item, str):  # subconscious always sends plain str
+                result = processor.process(item)
+                if result.get("passes"):
+                    refined = result.get("refined", item)
+                    mem_manager.add_memory(refined, result.get("salience", 0.5))
                     bus.outgoing.put(Message(Role.AGENT, refined, time.time()))
 
-        # C) Periodic memory consolidation (hourly)
+
+        # C) Hourly memory consolidation
         if time.time() - last_consolidation > 3600:
             mem_manager.consolidate_memory()
             last_consolidation = time.time()
             print("Memory consolidation completed")
 
-        # D) Curiosity injection (every 120s)
+        # D) Curiosity injection every 120s
         if time.time() - last_curiosity > 120:
             thought_queue.put(("AI", "What aspect of my environment do I still not understand?"))
             if torch.cuda.is_available():
