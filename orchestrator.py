@@ -80,6 +80,7 @@ def main():
     
     # Main loop
     last_consolidation = time.time()
+    last_curiosity = time.time()
     
     while True:
         # Process thoughts
@@ -106,8 +107,16 @@ def main():
         # --- curiosity loop every 120 s -------------------------------------
         if time.time() - last_curiosity > 120:
             thought_queue.put("What aspect of my environment do I still not understand?")
+            
             # store an environment snapshot so the agent sees changing context
-            env_fact = f"EnvSnap | unix={int(time.time())} | gpu_temp={torch.cuda.get_device_properties(0).temperature if torch.cuda.is_available() else 'NA'}"
+            if torch.cuda.is_available():
+                props     = torch.cuda.get_device_properties(0)
+                gpu_name  = props.name
+                gpu_memGB = round(props.total_memory / (1024**3), 1)
+                env_fact = f"EnvSnap | unix={int(time.time())} | gpu={gpu_name} | vram={gpu_memGB}GB"
+            else:
+                env_fact = f"EnvSnap | unix={int(time.time())}"
+
             mem_manager.add_memory(env_fact, salient_score=0.3)
             last_curiosity = time.time()
 

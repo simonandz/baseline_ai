@@ -14,8 +14,8 @@ class ThoughtFilter:
         self.recent_embeddings = []
         
         # Thresholds
-        self.salience_thresh = 0.35
-        self.novelty_thresh = 0.25
+        self.salience_thresh = 0.40
+        self.novelty_thresh = 0.35
         
         # FIXED KEYWORDS - removed problematic regex
         self.keywords = ["why", "how", "important", "remember", "idea", 
@@ -45,10 +45,6 @@ class ThoughtFilter:
             score += 0.05  # looks like a complete sentence
 
         return min(1.0, score)
-
-    # Update default thresholds
-    self.salience_thresh = 0.40
-    self.novelty_thresh = 0.35
 
 
     def _calculate_novelty(self, embedding: np.ndarray) -> float:
