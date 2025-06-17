@@ -35,35 +35,22 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class Subconscious:
-    def __init__(
-        self,
-        output_queue: Queue,
-        memory=None,
-        model_name: str = DEFAULT_MODEL,
-        interval: float = INTERVAL_SECONDS,
-        device: Optional[torch.device] = None,
-        max_embedding_history: int = 80,
-        similarity_threshold: float = DUPLICATE_THRESHOLD
-    ):
-        """
-        Subconscious thought generator with Phi-2, embedding-based duplicate filtering,
-        and periodic context injection.
-
-        Args:
-            output_queue: queue for emitting generated thoughts
-            memory: MemoryManager for context retrieval
-            model_name: HuggingFace model identifier (default Phi-2)
-            interval: seconds between generation cycles
-            device: explicit torch device, else auto-detect
-            max_embedding_history: cache size for recent embeddings
-            similarity_threshold: max cosine similarity to allow new thought
-        """
-        self.queue = output_queue
-        self.memory = memory
-        self.interval = interval
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._lock = threading.Lock()
+    def __init__(self, output_queue: Queue, memory=None, *,
+                 model_name: str = DEFAULT_MODEL,
+                 interval: float = INTERVAL_SECONDS,
+                 device: Optional[torch.device] = None,
+                 max_embedding_history: int = 80,
+                 similarity_threshold: float = DUPLICATE_THRESHOLD):
+        # ───────────────────────────────────────────────────────────────
+        self.queue          = output_queue
+        self.memory         = memory
+        self.interval       = interval
+        self._stop_event    = threading.Event()
+        self._pause_event   = threading.Event()   #  ← NEW
+        self._pause_event.set()                   # start un-paused
+        self._thread        = threading.Thread(target=self._run,
+                                               daemon=True)
+        self._lock          = threading.Lock()
 
         # Device selection
         self.device = device if device else ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -130,6 +117,14 @@ class Subconscious:
         except Exception as e:
             logger.error(f"Context error: {e}", exc_info=True)
             return ""
+        
+    def pause(self) -> None:
+        """Temporarily stop generating background thoughts."""
+        self._pause_event.clear()
+
+    def resume(self) -> None:
+        """Allow generation to continue."""
+        self._pause_event.set()
 
     def _is_duplicate(self, thought: str) -> bool:
         """Check semantic similarity against recent embeddings."""
@@ -212,19 +207,18 @@ class Subconscious:
         return None
 
     def _run(self):
-        """Main loop: generate thoughts at fixed intervals."""
         logger.info("Subconscious thread starting")
         while not self._stop_event.is_set():
-            start = time.time()
+            # wait here while paused
+            self._pause_event.wait()
+
+            start   = time.time()
             thought = self._generate_thought()
             if thought:
                 with self._lock:
-                    # tag as AI and emit
                     self.queue.put(("AI", thought))
-                    self.thought_count += 1
-                logger.debug(f"Thought #{self.thought_count}: {thought}")
             elapsed = time.time() - start
-            time.sleep(max(0.1, self.interval - elapsed))
+            time.sleep(max(0.05, self.interval - elapsed))
         logger.info("Subconscious thread stopped")
 
     def start(self):

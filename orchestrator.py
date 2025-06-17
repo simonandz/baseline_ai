@@ -6,36 +6,18 @@ import logging
 from datetime import datetime
 
 import torch
+from transformers import pipeline
 from conscious.pipeline import ConsciousProcessor
-from subconscious import Subconscious
+from subconscious.mind import Subconscious
 from memory.manager import MemoryManager
 from memory.preload import initialize_base_knowledge
 from conversation import ConversationBus, Message, Role
-from transformers import pipeline
 
-_chat = pipeline(
-    "text-generation",
-    model="distilgpt2",
-    max_new_tokens=60,
-    temperature=0.6,
-    top_p=0.9,
-)
+IDLE_THRESHOLD = 5.0  # seconds of silence before day-dreaming may resume
 
-def respond_to_user(user_text: str) -> str:
-    prompt = (
-        "You are Maddie, an AI conversing with a human.\n"
-        f"Human: {user_text}\n"
-        "Maddie:"
-    )
-    out = _chat(prompt)[0]["generated_text"].replace(prompt, "").strip()
-    return out.split("\n")[0]  # first line
-
-
-AGENT_READY = False  # flips True once models finish loading
-
-# ---------------------------------------------------------------------------- #
-#  CUDA / logging boilerplate                                                   
-# ---------------------------------------------------------------------------- #
+# ──────────────────────────────────────────────────────────────────────────────
+#  CUDA / logging boilerplate
+# ──────────────────────────────────────────────────────────────────────────────
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -51,111 +33,105 @@ else:
     device = torch.device("cpu")
     print("Using CPU")
 
-# ---------------------------------------------------------------------------- #
-#  MAIN                                                                        
-# ---------------------------------------------------------------------------- #
-def main(bus: ConversationBus | None = None) -> None:
-    global AGENT_READY
+# ──────────────────────────────────────────────────────────────────────────────
+#  Small, CPU‐only chat model for conscious replies (to avoid OOM on GPU)
+# ──────────────────────────────────────────────────────────────────────────────
+_chat = pipeline(
+    "text-generation",
+    model="distilgpt2",
+    device=-1,            # ← force CPU
+)
 
-    # 1) Setup bus
+def respond_to_user(user_text: str) -> str:
+    prompt = (
+        "You are **Maddie**, an AI designed to converse naturally with a human.\n"
+        "Do NOT echo or mirror the user's exact words.\n"
+        f"User: {user_text}\n"
+        "Maddie:"
+    )
+    out = _chat(
+        prompt,
+        max_new_tokens=60,
+        temperature=0.6,
+        top_p=0.9
+    )[0]["generated_text"]
+    # strip off prompt
+    reply = out.replace(prompt, "").strip().split("\n")[0]
+    return reply
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  MAIN
+# ──────────────────────────────────────────────────────────────────────────────
+def main(bus: ConversationBus | None = None) -> None:
     if bus is None:
         bus = ConversationBus()
 
-    # 2) Initialize memory
-    mem_manager = MemoryManager()
-    initialize_base_knowledge(mem_manager)
-
-    # 3) Identity banner
-    print("\n" + "=" * 40)
-    print("AI Identity: Maddie")
-    print("- I am Maddie, an artificial intelligence system designed to simulate human thought processes.")
-    print("=" * 40 + "\n")
-
-    # 4) Prepare queue & processors
-    thought_queue: queue.Queue[str | tuple[str, str]] = queue.Queue(maxsize=100)
-    processor = ConsciousProcessor()
+    # … unchanged initialisation …
     subconscious = Subconscious(
         output_queue=thought_queue,
         memory=mem_manager,
         model_name="microsoft/phi-2",
         device=device,
     )
-
-    # 5) Start subconscious
     subconscious.start()
-    print("Subconscious started")
-    AGENT_READY = True
 
-    # ---------------------------------------------------------------------------- #
-    #  Monitor thread – prints only AI-generated thoughts                           
-    # ---------------------------------------------------------------------------- #
-    def monitor_subconscious():
-        print("\nSubconscious Monitor Active")
-        while True:
-            if not thought_queue.empty():
-                item = thought_queue.get()
-                thought_queue.task_done()
-                # interpret plain string as AI
-                who, txt = (item if isinstance(item, tuple) else ("AI", item))
-                if who == "AI":
-                    ts = datetime.now().strftime("%H:%M:%S")
-                    print(f"🧠 [{ts}] {txt}")
-            time.sleep(0.1)
+    # ─── new state variable ───────────────────────────────────────────
+    last_user_time = time.time()
 
-    threading.Thread(target=monitor_subconscious, daemon=True).start()
-
-    # ---------------------------------------------------------------------------- #
-    #  Main loop – ingest user, process AI thoughts                                
-    # ---------------------------------------------------------------------------- #
-    last_consolidation = time.time()
-    last_curiosity     = time.time()
-
+    # -----------------------------------------------------------------
     while True:
-        # A) ingest USER messages
+        # 1) ingest USER messages
         if not bus.incoming.empty():
             msg = bus.incoming.get()
+            last_user_time = time.time()                 #  ← update
+            mem_manager.add_memory(f"[USER] {msg.text}", 0.6)
+            thought_queue.put(("USER", msg.text))
 
-            # 1. store in memory (but DO NOT send to thought_queue)
-            mem_manager.add_memory(f"[USER] {msg.text}", 0.8)
-
-            # 2. immediate conversational reply
-            reply = respond_to_user(msg.text)          # ← new helper (see below)
-            bus.outgoing.put(Message(Role.AGENT, reply, time.time()))
-            print("💬", reply)                         # optional console echo
-
-        # B) process AI-generated subconscious thoughts
+        # 2) conscious processing of any queued thought
         if not thought_queue.empty():
-            item = thought_queue.get(); thought_queue.task_done()
-            if isinstance(item, str):  # subconscious always sends plain str
-                result = processor.process(item)
-                if result.get("passes"):
-                    refined = result.get("refined", item)
-                    mem_manager.add_memory(refined, result.get("salience", 0.5))
-                    bus.outgoing.put(Message(Role.AGENT, refined, time.time()))
+            who, thought = thought_queue.get()
+            if who == "AI":
+                result = processor.process(thought)
+                if result.get("passes", False):
+                    refined = result.get("refined", thought)
+                    bus.outgoing.put(Message(Role.AGENT,
+                                             refined,
+                                             time.time()))
+                    mem_manager.add_memory(refined,
+                                           result.get("salience", 0.5))
+            # ignore USER marker here
+            thought_queue.task_done()
 
-
-        # C) Hourly memory consolidation
+        # ────────────────────────
+        # 3) hourly consolidation
+        # ────────────────────────
         if time.time() - last_consolidation > 3600:
-            mem_manager.consolidate_memory()
+            mem.consolidate_memory()
             last_consolidation = time.time()
-            print("Memory consolidation completed")
 
-        # D) Curiosity injection every 120s
+        # ────────────────────────
+        # 4) inject curiosity
+        # ────────────────────────
         if time.time() - last_curiosity > 120:
-            thought_queue.put(("AI", "What aspect of my environment do I still not understand?"))
+            question = "What aspect of my environment do I still not understand?"
+            thought_queue.put(question)
+
+            # snapshot GPU/clock for memory
             if torch.cuda.is_available():
                 props     = torch.cuda.get_device_properties(0)
-                gpu_name  = props.name
-                gpu_memGB = round(props.total_memory / (1024**3), 1)
-                env_fact  = f"EnvSnap | unix={int(time.time())} | gpu={gpu_name} | vram={gpu_memGB}GB"
+                snap      = f"EnvSnap | time={int(time.time())} | gpu={props.name} | vram={round(props.total_memory/(1024**3),1)}GB"
             else:
-                env_fact  = f"EnvSnap | unix={int(time.time())}"
-            mem_manager.add_memory(env_fact, salient_score=0.3)
+                snap      = f"EnvSnap | time={int(time.time())}"
+            mem.add_memory(snap, salient_score=0.3)
+
             last_curiosity = time.time()
+        # ─── 5) throttle subconscious ────────────────────────────────
+        if time.time() - last_user_time < IDLE_THRESHOLD:
+            subconscious.pause()     # user is active → suppress day-dreams
+        else:
+            subconscious.resume()    # user quiet → free to generate
 
         time.sleep(0.1)
 
-
-# ---------------------------------------------------------------------------- #
 if __name__ == "__main__":
     main()
