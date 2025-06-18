@@ -42,12 +42,14 @@ class Subconscious:
                  max_embedding_history: int = 80,
                  similarity_threshold: float = DUPLICATE_THRESHOLD):
         # ───────────────────────────────────────────────────────────────
-        self.queue          = output_queue
-        self.memory         = memory
-        self.interval       = interval
-        self._stop_event    = threading.Event()
-        self._pause_event   = threading.Event()   #  ← NEW
-        self._pause_event.set()                   # start un-paused
+        # Initialize threading events FIRST
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        
+        # Then initialize other components
+        self.queue = output_queue
+        self.memory = memory
         self._thread        = threading.Thread(target=self._run,
                                                daemon=True)
         self._lock          = threading.Lock()
