@@ -66,12 +66,20 @@ def main(bus: ConversationBus | None = None) -> None:
     if bus is None:
         bus = ConversationBus()
 
-    # … unchanged initialisation …
+    mem_manager = MemoryManager()
+    initialize_base_knowledge(mem_manager)
+
+    # queue must exist before we hand it to Subconscious  👈
+    thought_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=200)
+    processor = ConsciousProcessor()
+    last_consolidation = time.time()      # first consolidation is an hour away
+    last_curiosity     = time.time()      # first curiosity prompt in 120 s
+
     subconscious = Subconscious(
         output_queue=thought_queue,
-        memory=mem_manager,
-        model_name="microsoft/phi-2",
-        device=device,
+        memory       = mem_manager,
+        model_name   = "microsoft/phi-2",
+        device       = device,
     )
     subconscious.start()
 
@@ -106,7 +114,7 @@ def main(bus: ConversationBus | None = None) -> None:
         # 3) hourly consolidation
         # ────────────────────────
         if time.time() - last_consolidation > 3600:
-            mem.consolidate_memory()
+            mem_manager.consolidate_memory()
             last_consolidation = time.time()
 
         # ────────────────────────
@@ -122,7 +130,7 @@ def main(bus: ConversationBus | None = None) -> None:
                 snap      = f"EnvSnap | time={int(time.time())} | gpu={props.name} | vram={round(props.total_memory/(1024**3),1)}GB"
             else:
                 snap      = f"EnvSnap | time={int(time.time())}"
-            mem.add_memory(snap, salient_score=0.3)
+            mem_manager.add_memory(snap, salient_score=0.3)
 
             last_curiosity = time.time()
         # ─── 5) throttle subconscious ────────────────────────────────
