@@ -41,17 +41,18 @@ class Subconscious:
                  max_embedding_history: int = 80,
                  similarity_threshold: float = DUPLICATE_THRESHOLD):
         
-        # Initialize threading components first
+        # Initialize core attributes first
+        self.queue = output_queue
+        self.memory = memory
+        self.model_name = model_name  # ADD THIS LINE
+        self.interval = interval
+        self._model_ready = False
+        
+        # Initialize threading components
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._lock = threading.Lock()
-        
-        # Core attributes
-        self.queue = output_queue
-        self.memory = memory
-        self.interval = interval
-        self._model_ready = False
         
         # Device selection
         self.device = device if device else ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -102,12 +103,14 @@ class Subconscious:
 
     def pause(self) -> None:
         """Temporarily stop generating background thoughts."""
-        logger.info("Pausing subconscious")
+        if self._pause_event.is_set():  # Only log if we're not already paused
+            logger.debug("Pausing subconscious")
         self._pause_event.clear()
 
     def resume(self) -> None:
         """Allow generation to continue."""
-        logger.info("Resuming subconscious")
+        if not self._pause_event.is_set():  # Only log if we're not already running
+            logger.debug("Resuming subconscious")
         self._pause_event.set()
 
     def _is_duplicate(self, thought: str) -> bool:

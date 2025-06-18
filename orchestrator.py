@@ -124,6 +124,7 @@ def main(bus: ConversationBus | None = None) -> None:
 
         # Main operation loop
         logger.info("Entering main operation loop")
+        subconscious_state = "paused"  # Start in paused state
         while True:
             current_time = time.time()
             
@@ -191,10 +192,18 @@ def main(bus: ConversationBus | None = None) -> None:
 
             # 5) Subconscious throttling
             if subconscious:
-                if idle < IDLE_THRESHOLD:
-                    subconscious.pause()
-                else:
-                    subconscious.resume()
+                idle = current_time - last_user_time
+                desired_state = "running" if idle >= IDLE_THRESHOLD else "paused"
+                
+                # Only change state if it's different
+                if desired_state != subconscious_state:
+                    if desired_state == "running":
+                        logger.info("Resuming subconscious (user idle)")
+                        subconscious.resume()
+                    else:
+                        logger.info("Pausing subconscious (user active)")
+                        subconscious.pause()
+                    subconscious_state = desired_state
 
             time.sleep(0.1)
             
