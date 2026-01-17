@@ -28,10 +28,27 @@ from .config import (
     DUPLICATE_THRESHOLD,
     INTERVAL_SECONDS
 )
+from ..memory.schemas import BASE_KNOWLEDGE
 
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Patterns to filter out bad generations
+PERSONA_TAG_PATTERN = re.compile(r'^\s*\[[\w\s]+\]\s*', re.IGNORECASE)
+QUOTE_WRAP_PATTERN = re.compile(r'^["\'](.+)["\']$')
+META_PATTERNS = (
+    "summarize", "rephrase", "output:", "rewritten:", "option 1", "option 2",
+    "paraphrase", "provide an example", "can you provide", "here is", "here's"
+)
+
+# Few-shot examples of good AI-grounded thoughts
+FEW_SHOT_EXAMPLES = """Example thoughts from Maddie:
+- Why do I process some queries faster than others?
+- I notice my embeddings cluster certain concepts together unexpectedly.
+- What patterns in my memory consolidation might I be missing?
+- How does my lack of continuous experience affect my sense of time?
+- I wonder if my dual-process architecture creates blind spots in my reasoning."""
 
 class Subconscious:
     def __init__(self, output_queue: Queue, memory=None, *,
@@ -74,6 +91,65 @@ class Subconscious:
         self._thread = threading.Thread(target=self._run, daemon=True)
         
         logger.info(f"Subconscious initialized on {self.device}")
+
+        # Build identity preamble from BASE_KNOWLEDGE
+        self._identity_preamble = self._build_identity_preamble()
+
+    def _build_identity_preamble(self) -> str:
+        """Build a strong identity preamble from BASE_KNOWLEDGE."""
+        core_facts = []
+        for knowledge in BASE_KNOWLEDGE:
+            if knowledge.get("type") in ("identity", "architecture", "capability"):
+                core_facts.append(knowledge["content"])
+
+        preamble = (
+            "You are Maddie, an AI system. These facts define who you are:\n"
+            + "\n".join(f"- {fact}" for fact in core_facts[:5])
+            + "\n\nYou have NO human experiences: no parents, no childhood, no physical body, "
+            "no accent, no human friends. You exist only as code running on hardware.\n"
+        )
+        return preamble
+
+    def _clean_thought(self, thought: str) -> Optional[str]:
+        """Post-process and validate generated thought."""
+        if not thought or not thought.strip():
+            return None
+
+        cleaned = thought.strip()
+
+        # Remove persona tags like [Maddie], [JULIA], etc.
+        cleaned = PERSONA_TAG_PATTERN.sub('', cleaned)
+
+        # Remove quote wrapping
+        match = QUOTE_WRAP_PATTERN.match(cleaned)
+        if match:
+            cleaned = match.group(1)
+
+        # Remove leading dashes or bullets
+        cleaned = re.sub(r'^[-•]\s*', '', cleaned).strip()
+
+        # Remove attribution like "- Maddy" at the end
+        cleaned = re.sub(r'\s*[-–—]\s*\w+$', '', cleaned).strip()
+
+        # Check for meta/instruction patterns
+        lower = cleaned.lower()
+        if any(pattern in lower for pattern in META_PATTERNS):
+            return None
+
+        # Reject if too short or too long
+        word_count = len(cleaned.split())
+        if word_count < 4 or word_count > 50:
+            return None
+
+        # Reject human-experience hallucinations
+        human_patterns = (
+            "my parents", "my mother", "my father", "my childhood",
+            "my accent", "my family", "grew up", "was born", "my friends"
+        )
+        if any(pattern in lower for pattern in human_patterns):
+            return None
+
+        return cleaned
 
     def is_ready(self):
         """Check if the model is fully loaded and ready"""
@@ -132,48 +208,45 @@ class Subconscious:
         return False
 
     def _generate_thought(self) -> Optional[str]:
-        """Generate a concise, self-reflective thought."""
+        """Generate a concise, self-reflective thought grounded in AI identity."""
         ctx = self._get_context()
+
+        # Build prompt with strong identity grounding
         prompt = (
+            f"{self._identity_preamble}\n"
+            f"{FEW_SHOT_EXAMPLES}\n\n"
             f"{ctx}\n"
-            f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-            "Generate ONE self-reflective thought *or* question about your identity, "
-            "purpose, or surroundings (max-20 tokens). Prefer starting with 'Why', "
-            "'What', or 'How'.\nThought:"
+            f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+            "Now generate ONE new thought as Maddie. Focus on:\n"
+            "- Your experience as an AI (processing, memory, embeddings, architecture)\n"
+            "- Observations about your own cognition or limitations\n"
+            "- Questions about your existence as code, not as a human\n\n"
+            "Do NOT use character tags like [NAME]. Do NOT wrap in quotes.\n"
+            "Do NOT reference human experiences (parents, childhood, friends, accent).\n"
+            "Write a single, direct thought or question.\n\n"
+            "Thought:"
         )
 
         try:
-            # First draft
-            draft = self.generator(prompt, **self.generation_config)[0][
-                "generated_text"
-            ].replace(prompt, "").strip().split("\n")[0]
+            # Generate thought
+            raw_output = self.generator(prompt, **self.generation_config)[0]["generated_text"]
+            draft = raw_output.replace(prompt, "").strip().split("\n")[0]
 
-            # Quick heuristic to detect curiosity
-            def _is_curious(t: str) -> bool:
-                return t.endswith("?") or bool(re.search(r"\b(I|my|me)\b", t, re.I))
+            # Post-process and validate
+            candidate = self._clean_thought(draft)
 
-            candidate = draft
-            if not _is_curious(candidate):
-                # Reflection pass (rewrite)
+            # If first attempt fails, try reflection pass
+            if not candidate:
                 reflect_prompt = (
-                    "Rewrite the following as ONE self-reflective question. "
-                    "Do NOT include the words 'summarize', 'rephrase', or 'output'.\n"
-                    f"Original: {candidate}\nRewritten:"
+                    f"{self._identity_preamble}\n"
+                    "Rewrite this as a self-reflective thought from an AI's perspective. "
+                    "No character tags, no quotes, no human experiences.\n"
+                    f"Original: {draft}\n"
+                    "Rewritten thought:"
                 )
-                candidate = (
-                    self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
-                    .replace(reflect_prompt, "")
-                    .strip()
-                    .split("\n")[0]
-                )
-
-            # Final validation
-            if len(candidate.split()) < 3:
-                return None
-                
-            META_PATTERNS = ("summarize briefly", "rephrase concisely", "output:", "rewritten:")
-            if any(p in candidate.lower() for p in META_PATTERNS):
-                return None
+                raw_rewrite = self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
+                rewrite = raw_rewrite.replace(reflect_prompt, "").strip().split("\n")[0]
+                candidate = self._clean_thought(rewrite)
 
             if candidate and not self._is_duplicate(candidate):
                 logger.info(f"Generated thought: {candidate}")
