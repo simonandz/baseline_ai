@@ -2,10 +2,12 @@ import sqlite3
 import numpy as np
 import logging
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
+from sklearn.metrics.pairwise import cosine_similarity
 from transformers import pipeline
 
 # Configure logging
@@ -25,7 +27,9 @@ class MemoryManager:
         - Salience scoring
         """
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        # Thread-safe SQLite connection
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.Lock()
         self._init_database()
         
         # Load models
@@ -87,36 +91,39 @@ class MemoryManager:
     def add_memory(self, content: str, salient_score: float = 0.0):
         """
         Store a new memory with semantic embedding
-        
+
         Args:
             content: The text of the memory
             salient_score: Importance rating (0.0-1.0)
         """
         try:
             embedding = self.embedder.encode([content])[0]
-            cursor = self.conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO thoughts (content, embedding, salient_score)
-                VALUES (?, ?, ?)
-            ''', (content, embedding.tobytes(), salient_score))
-            
-            self.conn.commit()
-            
-            # Cache recent memory
-            self.recent_memories.insert(0, content)
-            if len(self.recent_memories) > 20:
-                self.recent_memories.pop()
-                
+
+            with self._lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO thoughts (content, embedding, salient_score)
+                    VALUES (?, ?, ?)
+                ''', (content, embedding.tobytes(), salient_score))
+                self.conn.commit()
+
+                # Cache recent memory
+                self.recent_memories.insert(0, content)
+                if len(self.recent_memories) > 20:
+                    self.recent_memories.pop()
+
+                last_id = cursor.lastrowid
+
             logger.debug("Added memory: %s", content[:50] + "...")
-            return cursor.lastrowid
+            return last_id
         except Exception as e:
             logger.error("Failed to add memory: %s", e)
             return None
 
     def get_recent_memories(self, count: int = 5) -> List[str]:
-        """Get most recent memories from cache"""
-        return self.recent_memories[:count]
+        """Get most recent memories from cache (thread-safe)"""
+        with self._lock:
+            return self.recent_memories[:count]
 
     def semantic_search(self, query: str, count: int = 3) -> List[Dict[str, Any]]:
         """

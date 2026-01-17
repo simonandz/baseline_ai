@@ -1,4 +1,8 @@
 # conscious/filter.py
+"""
+Thought filtering with salience and novelty scoring.
+Uses centralized thresholds from config.yaml via config.py.
+"""
 import re
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
@@ -6,40 +10,37 @@ from sentence_transformers import SentenceTransformer
 from typing import Dict
 import logging
 
+from .config import SALIENCE_THRESHOLD, NOVELTY_THRESHOLD
+
 logger = logging.getLogger(__name__)
+
 
 class ThoughtFilter:
     def __init__(self):
         self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
         self.recent_embeddings = []
-        
-        # Thresholds
-        self.salience_thresh = 0.40
-        self.novelty_thresh = 0.35
-        
-        # FIXED KEYWORDS - removed problematic regex
-        self.keywords = ["why", "how", "important", "remember", "idea", 
+
+        # Use centralized thresholds from config
+        self.salience_thresh = SALIENCE_THRESHOLD
+        self.novelty_thresh = NOVELTY_THRESHOLD
+
+        # Keywords for salience detection
+        self.keywords = ["why", "how", "important", "remember", "idea",
                          "solution", "problem", "question", "insight"]
 
-# Raise novelty threshold & add explicit bonus for interrogatives.
-# (Replace _calculate_salience with this version.)
-
     def _calculate_salience(self, thought: str) -> float:
+        """Calculate salience score based on curiosity and self-reference."""
         score = 0.0
-        # curiosity: proportion of sentences ending with '?'
+        # Curiosity: proportion of sentences ending with '?'
         sentences = re.split(r"(?<=[.!?])\s+", thought)
         q_count = sum(1 for s in sentences if s.strip().endswith("?"))
-        score += 0.25 * min(1, q_count)          # max +0.25
-        # self‑reference
+        score += 0.25 * min(1, q_count)  # max +0.25
+        # Self-reference
         if re.search(r"\b(I|me|my|mine)\b", thought, re.I):
             score += 0.10
-        # length bonus (avoid trivial questions)
+        # Length bonus (avoid trivial questions)
         score += min(0.2, len(thought.split()) / 60)
         return min(1.0, score)
-
-    # thresholds inside __init__
-        self.salience_thresh = 0.45
-        self.novelty_thresh  = 0.38
 
 
     def _calculate_novelty(self, embedding: np.ndarray) -> float:
