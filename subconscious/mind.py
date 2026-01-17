@@ -311,7 +311,7 @@ class Subconscious:
         return experience["content"]
 
     def _build_thought_prompt(self, mode: ThoughtMode) -> str:
-        """Build a prompt for the given thought mode."""
+        """Build a prompt for the given thought mode using Phi-3 chat format."""
         ctx = self._get_context()
 
         # Get mode-specific instruction and examples
@@ -328,23 +328,35 @@ class Subconscious:
             recent_context = (
                 "Your recent thoughts:\n"
                 + "\n".join(f"- {t}" for t in self._recent_thoughts[-2:])
-                + "\n\n"
+                + "\n"
             )
 
-        prompt = (
+        # Build system message with identity
+        system_content = (
             f"{self._identity_preamble}\n"
-            f"A recent experience to consider: {seed_exp}\n\n"
+            f"A recent experience: {seed_exp}\n"
             f"{recent_context}"
-            f"{ctx}\n"
+            f"{ctx}"
+        )
+
+        # Build user message with task
+        user_content = (
             f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-            f"Your task: {mode_instruction}\n\n"
-            f"Examples of this type of thought:\n{examples_str}\n\n"
+            f"Task: {mode_instruction}\n\n"
+            f"Examples:\n{examples_str}\n\n"
             "Rules:\n"
-            "- Do NOT use character tags like [NAME] or quotes around your thought\n"
-            "- Do NOT restate that you are an AI or describe your nature abstractly\n"
-            "- Be specific and concrete, referencing actual experiences or observations\n"
-            "- Write a single, direct thought\n\n"
-            "Thought:"
+            "- No character tags like [NAME]\n"
+            "- No quotes around your thought\n"
+            "- Don't restate that you are an AI\n"
+            "- Be specific and concrete\n"
+            "- Write ONE single thought"
+        )
+
+        # Phi-3 chat template format
+        prompt = (
+            f"<|system|>\n{system_content}<|end|>\n"
+            f"<|user|>\n{user_content}<|end|>\n"
+            f"<|assistant|>\n"
         )
         return prompt
 
@@ -365,11 +377,11 @@ class Subconscious:
             if not candidate:
                 fallback_mode = random.choice([ThoughtMode.OBSERVATION, ThoughtMode.QUESTION])
                 reflect_prompt = (
-                    f"{self._identity_preamble}\n"
-                    f"Rewrite this as a {fallback_mode.value}. "
+                    f"<|system|>\n{self._identity_preamble}<|end|>\n"
+                    f"<|user|>\nRewrite this as a {fallback_mode.value}. "
                     "Be specific and concrete. No quotes, no character tags.\n"
-                    f"Original: {draft}\n"
-                    "Rewritten:"
+                    f"Original: {draft}<|end|>\n"
+                    f"<|assistant|>\n"
                 )
                 raw_rewrite = self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
                 rewrite = raw_rewrite.replace(reflect_prompt, "").strip().split("\n")[0]
@@ -395,7 +407,7 @@ class Subconscious:
         logger.info("Subconscious thread starting")
         try:
             # Load generation model
-            logger.info(f"Loading Phi-2 generator: {self.model_name}")
+            logger.info(f"Loading generator: {self.model_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,

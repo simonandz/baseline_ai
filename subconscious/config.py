@@ -8,12 +8,12 @@ Optimized for Google Colab GPU and dynamic context.
 INTERVAL_SECONDS = 3
 
 # Model and quantization
-DEFAULT_MODEL = "microsoft/phi-2"
+DEFAULT_MODEL = "microsoft/Phi-3-mini-4k-instruct"
 USE_8BIT = True
 DEVICE_MAP = "auto"
 
-# Generation length
-MAX_NEW_TOKENS = 40
+# Generation length - increased for Phi-3's better coherence
+MAX_NEW_TOKENS = 60
 
 # Sampling parameters
 TEMPERATURE = 0.6
