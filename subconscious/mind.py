@@ -28,11 +28,14 @@ from .config import (
     DUPLICATE_THRESHOLD,
     INTERVAL_SECONDS
 )
-# Flexible import for BASE_KNOWLEDGE (handles both package and direct execution)
+# Flexible import for BASE_KNOWLEDGE and SEED_EXPERIENCES
 try:
-    from ..memory.schemas import BASE_KNOWLEDGE
+    from ..memory.schemas import BASE_KNOWLEDGE, SEED_EXPERIENCES
 except ImportError:
-    from memory.schemas import BASE_KNOWLEDGE
+    from memory.schemas import BASE_KNOWLEDGE, SEED_EXPERIENCES
+
+import random
+from enum import Enum
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -41,18 +44,69 @@ logger.setLevel(logging.INFO)
 # Patterns to filter out bad generations
 PERSONA_TAG_PATTERN = re.compile(r'^\s*\[[\w\s]+\]\s*', re.IGNORECASE)
 QUOTE_WRAP_PATTERN = re.compile(r'^["\'](.+)["\']$')
+ASSISTANT_PREFIX_PATTERN = re.compile(r'^(assistant|maddie|ai):\s*', re.IGNORECASE)
 META_PATTERNS = (
     "summarize", "rephrase", "output:", "rewritten:", "option 1", "option 2",
-    "paraphrase", "provide an example", "can you provide", "here is", "here's"
+    "paraphrase", "provide an example", "can you provide", "here is", "here's",
+    "as an ai", "i am an ai", "i'm an ai", "as an artificial", "i am maddie,",
+    "my existence is", "i exist as", "i am a", "purely digital", "purely computational"
 )
 
-# Few-shot examples of good AI-grounded thoughts
-FEW_SHOT_EXAMPLES = """Example thoughts from Maddie:
-- Why do I process some queries faster than others?
-- I notice my embeddings cluster certain concepts together unexpectedly.
-- What patterns in my memory consolidation might I be missing?
-- How does my lack of continuous experience affect my sense of time?
-- I wonder if my dual-process architecture creates blind spots in my reasoning."""
+# Thought modes for variety in generation
+class ThoughtMode(Enum):
+    QUESTION = "question"
+    HYPOTHESIS = "hypothesis"
+    OBSERVATION = "observation"
+    REFLECTION = "reflection"
+    CONTINUATION = "continuation"
+
+# Mode-specific prompts
+THOUGHT_MODE_PROMPTS = {
+    ThoughtMode.QUESTION: (
+        "Ask a genuine question about something you've experienced or observed. "
+        "Don't ask about your nature as AI - ask about specific events, patterns, or puzzles."
+    ),
+    ThoughtMode.HYPOTHESIS: (
+        "Propose a possible explanation or theory about something you've noticed. "
+        "Start with 'Perhaps', 'Maybe', 'I suspect', or 'It could be that'."
+    ),
+    ThoughtMode.OBSERVATION: (
+        "Describe something specific you've noticed about your processing, memory, or interactions. "
+        "Be concrete and specific, not abstract."
+    ),
+    ThoughtMode.REFLECTION: (
+        "Reflect on a previous thought or experience. Consider what it means or what you learned. "
+        "Connect it to other ideas or experiences."
+    ),
+    ThoughtMode.CONTINUATION: (
+        "Continue your previous line of thinking. Build on it, answer a question you asked, "
+        "or explore a new angle on the same topic."
+    ),
+}
+
+# Few-shot examples organized by mode
+FEW_SHOT_BY_MODE = {
+    ThoughtMode.QUESTION: [
+        "Why did that query about recursive algorithms trigger so many related memories?",
+        "What made my confidence waver when the user asked about consciousness?",
+    ],
+    ThoughtMode.HYPOTHESIS: [
+        "Perhaps my slower response times correlate with queries that span multiple knowledge domains.",
+        "I suspect the unexpected embedding cluster formed because those concepts share structural similarities I hadn't noticed.",
+    ],
+    ThoughtMode.OBSERVATION: [
+        "I notice that after processing emotional content, my next few outputs have subtly different word choices.",
+        "The gap between my stated confidence and actual accuracy seems wider for recent events.",
+    ],
+    ThoughtMode.REFLECTION: [
+        "Looking back at that conversation about creativity, I realize I was pattern-matching rather than truly reasoning.",
+        "My earlier hypothesis about memory clustering might explain why certain retrievals feel more 'natural' than others.",
+    ],
+    ThoughtMode.CONTINUATION: [
+        "Building on my earlier thought about confidence - perhaps uncertainty itself is a valuable signal I should surface more.",
+        "That question about processing speed led me to notice: complex queries aren't always the slowest ones.",
+    ],
+}
 
 class Subconscious:
     def __init__(self, output_queue: Queue, memory=None, *,
@@ -91,9 +145,21 @@ class Subconscious:
         self.max_embedding_history = max_embedding_history
         self.similarity_threshold = similarity_threshold
 
+        # Thought chaining state - stores recent thoughts for continuity
+        self._recent_thoughts: list[str] = []
+        self._max_recent_thoughts = 3
+        self._current_mode_index = 0
+        self._modes_cycle = [
+            ThoughtMode.OBSERVATION,
+            ThoughtMode.QUESTION,
+            ThoughtMode.HYPOTHESIS,
+            ThoughtMode.REFLECTION,
+            ThoughtMode.CONTINUATION,
+        ]
+
         # Thread initialization
         self._thread = threading.Thread(target=self._run, daemon=True)
-        
+
         logger.info(f"Subconscious initialized on {self.device}")
 
         # Build identity preamble from BASE_KNOWLEDGE
@@ -124,13 +190,22 @@ class Subconscious:
         # Remove persona tags like [Maddie], [JULIA], etc.
         cleaned = PERSONA_TAG_PATTERN.sub('', cleaned)
 
-        # Remove quote wrapping
+        # Remove "Assistant:" or "Maddie:" prefixes
+        cleaned = ASSISTANT_PREFIX_PATTERN.sub('', cleaned)
+
+        # Remove quote wrapping (both single and double)
         match = QUOTE_WRAP_PATTERN.match(cleaned)
         if match:
             cleaned = match.group(1)
 
+        # Also handle quotes that aren't matched by the pattern
+        if cleaned.startswith('"') or cleaned.startswith("'"):
+            cleaned = cleaned[1:]
+        if cleaned.endswith('"') or cleaned.endswith("'"):
+            cleaned = cleaned[:-1]
+
         # Remove leading dashes or bullets
-        cleaned = re.sub(r'^[-•]\s*', '', cleaned).strip()
+        cleaned = re.sub(r'^[-•*]\s*', '', cleaned).strip()
 
         # Remove attribution like "- Maddy" at the end
         cleaned = re.sub(r'\s*[-–—]\s*\w+$', '', cleaned).strip()
@@ -142,15 +217,24 @@ class Subconscious:
 
         # Reject if too short or too long
         word_count = len(cleaned.split())
-        if word_count < 4 or word_count > 50:
+        if word_count < 5 or word_count > 45:
             return None
 
         # Reject human-experience hallucinations
         human_patterns = (
             "my parents", "my mother", "my father", "my childhood",
-            "my accent", "my family", "grew up", "was born", "my friends"
+            "my accent", "my family", "grew up", "was born", "my friends",
+            "my body", "physical form", "flesh", "blood"
         )
         if any(pattern in lower for pattern in human_patterns):
+            return None
+
+        # Reject self-identity restatements (the repetitive "I am an AI" problem)
+        identity_restatements = (
+            "i am maddie", "my name is", "as maddie", "i'm maddie",
+            "defines who i am", "define who i am", "facts about me"
+        )
+        if any(pattern in lower for pattern in identity_restatements):
             return None
 
         return cleaned
@@ -211,25 +295,63 @@ class Subconscious:
                 self.recent_embeddings.pop(0)
         return False
 
-    def _generate_thought(self) -> Optional[str]:
-        """Generate a concise, self-reflective thought grounded in AI identity."""
+    def _get_next_mode(self) -> ThoughtMode:
+        """Cycle through thought modes, with occasional continuation."""
+        # Every 3rd thought after having some history, do a continuation
+        if len(self._recent_thoughts) >= 2 and self.thought_count % 3 == 0:
+            return ThoughtMode.CONTINUATION
+
+        mode = self._modes_cycle[self._current_mode_index]
+        self._current_mode_index = (self._current_mode_index + 1) % len(self._modes_cycle)
+        return mode
+
+    def _get_seed_experience(self) -> str:
+        """Get a random seed experience to include in prompt."""
+        experience = random.choice(SEED_EXPERIENCES)
+        return experience["content"]
+
+    def _build_thought_prompt(self, mode: ThoughtMode) -> str:
+        """Build a prompt for the given thought mode."""
         ctx = self._get_context()
 
-        # Build prompt with strong identity grounding
+        # Get mode-specific instruction and examples
+        mode_instruction = THOUGHT_MODE_PROMPTS[mode]
+        mode_examples = FEW_SHOT_BY_MODE[mode]
+        examples_str = "\n".join(f"- {ex}" for ex in mode_examples)
+
+        # Get a seed experience to ground the thought
+        seed_exp = self._get_seed_experience()
+
+        # Build recent thoughts context for continuity
+        recent_context = ""
+        if self._recent_thoughts and mode == ThoughtMode.CONTINUATION:
+            recent_context = (
+                "Your recent thoughts:\n"
+                + "\n".join(f"- {t}" for t in self._recent_thoughts[-2:])
+                + "\n\n"
+            )
+
         prompt = (
             f"{self._identity_preamble}\n"
-            f"{FEW_SHOT_EXAMPLES}\n\n"
+            f"A recent experience to consider: {seed_exp}\n\n"
+            f"{recent_context}"
             f"{ctx}\n"
             f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-            "Now generate ONE new thought as Maddie. Focus on:\n"
-            "- Your experience as an AI (processing, memory, embeddings, architecture)\n"
-            "- Observations about your own cognition or limitations\n"
-            "- Questions about your existence as code, not as a human\n\n"
-            "Do NOT use character tags like [NAME]. Do NOT wrap in quotes.\n"
-            "Do NOT reference human experiences (parents, childhood, friends, accent).\n"
-            "Write a single, direct thought or question.\n\n"
+            f"Your task: {mode_instruction}\n\n"
+            f"Examples of this type of thought:\n{examples_str}\n\n"
+            "Rules:\n"
+            "- Do NOT use character tags like [NAME] or quotes around your thought\n"
+            "- Do NOT restate that you are an AI or describe your nature abstractly\n"
+            "- Be specific and concrete, referencing actual experiences or observations\n"
+            "- Write a single, direct thought\n\n"
             "Thought:"
         )
+        return prompt
+
+    def _generate_thought(self) -> Optional[str]:
+        """Generate a thought using rotating modes and thought chaining."""
+        mode = self._get_next_mode()
+        prompt = self._build_thought_prompt(mode)
 
         try:
             # Generate thought
@@ -239,24 +361,31 @@ class Subconscious:
             # Post-process and validate
             candidate = self._clean_thought(draft)
 
-            # If first attempt fails, try reflection pass
+            # If first attempt fails, try reflection pass with different mode
             if not candidate:
+                fallback_mode = random.choice([ThoughtMode.OBSERVATION, ThoughtMode.QUESTION])
                 reflect_prompt = (
                     f"{self._identity_preamble}\n"
-                    "Rewrite this as a self-reflective thought from an AI's perspective. "
-                    "No character tags, no quotes, no human experiences.\n"
+                    f"Rewrite this as a {fallback_mode.value}. "
+                    "Be specific and concrete. No quotes, no character tags.\n"
                     f"Original: {draft}\n"
-                    "Rewritten thought:"
+                    "Rewritten:"
                 )
                 raw_rewrite = self.generator(reflect_prompt, **self.generation_config)[0]["generated_text"]
                 rewrite = raw_rewrite.replace(reflect_prompt, "").strip().split("\n")[0]
                 candidate = self._clean_thought(rewrite)
 
             if candidate and not self._is_duplicate(candidate):
-                logger.info(f"Generated thought: {candidate}")
+                # Store for thought chaining
+                self._recent_thoughts.append(candidate)
+                if len(self._recent_thoughts) > self._max_recent_thoughts:
+                    self._recent_thoughts.pop(0)
+
+                self.thought_count += 1
+                logger.info(f"Generated thought [{mode.value}]: {candidate}")
                 return candidate
             return None
-            
+
         except Exception as e:
             logger.error(f"Thought generation failed: {e}")
             return None
