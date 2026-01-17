@@ -28,7 +28,11 @@ from .config import (
     DUPLICATE_THRESHOLD,
     INTERVAL_SECONDS
 )
-from ..memory.schemas import BASE_KNOWLEDGE
+# Flexible import for BASE_KNOWLEDGE (handles both package and direct execution)
+try:
+    from ..memory.schemas import BASE_KNOWLEDGE
+except ImportError:
+    from memory.schemas import BASE_KNOWLEDGE
 
 # Configure logging
 logger = logging.getLogger(__name__)
