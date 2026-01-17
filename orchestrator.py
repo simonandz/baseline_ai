@@ -102,7 +102,6 @@ def main(bus: ConversationBus | None = None) -> None:
             subconscious = Subconscious(
                 output_queue=thought_queue,
                 memory=mem_manager,
-                model_name="microsoft/phi-2",
                 device=device
             )
             
