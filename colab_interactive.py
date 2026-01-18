@@ -16,11 +16,10 @@ import logging
 import sys
 from datetime import datetime
 from typing import Optional
-from IPython.display import display, HTML, clear_output
+from IPython.display import display
 import ipywidgets as widgets
 
 import torch
-from transformers import pipeline
 
 # Configure logging
 logging.basicConfig(
@@ -69,14 +68,11 @@ class MaddieSession:
         self.memory = MemoryManager()
         initialize_base_knowledge(self.memory)
 
-        # Chat model (lightweight for responses)
+        # Chat model - use a small instruction-tuned model
+        # Options: TinyLlama, Phi-2, or share Phi-3 with subconscious
         logger.info("Loading chat model...")
-        self._chat_model = pipeline(
-            "text-generation",
-            model="distilgpt2",
-            device=-1,  # CPU for chat to save GPU for subconscious
-            torch_dtype=torch.float32
-        )
+        self._chat_model = None  # Will use subconscious model for chat
+        self._use_shared_model = True  # Share Phi-3 between subconscious and chat
 
         # Conscious processor (optional)
         self.processor = None
@@ -126,38 +122,57 @@ class MaddieSession:
         return thought
 
     def _generate_response(self, user_input: str) -> str:
-        """Generate a response to user input."""
+        """Generate a response to user input using Phi-3."""
         try:
-            # Build context from recent memories
-            recent = self.memory.get_recent_memories(3)
-            context = "\n".join(recent) if recent else ""
+            # Wait for subconscious model to be ready
+            if not self.subconscious.is_ready():
+                return "I'm still waking up... give me a moment."
 
-            prompt = f"""You are Maddie, a thoughtful AI. Respond naturally and concisely.
-Context: {context}
-User: {user_input}
-Maddie:"""
+            # Use Phi-3 chat template - keep it simple and direct
+            system_msg = (
+                "You are Maddie, a helpful AI assistant. Answer questions directly and concisely. "
+                "For math questions, give the answer. For other questions, respond helpfully in 1-2 sentences."
+            )
 
-            result = self._chat_model(
+            prompt = (
+                f"<|system|>\n{system_msg}<|end|>\n"
+                f"<|user|>\n{user_input}<|end|>\n"
+                f"<|assistant|>\n"
+            )
+
+            # Use the subconscious's Phi-3 model
+            result = self.subconscious.generator(
                 prompt,
-                max_new_tokens=60,
-                temperature=0.7,
+                max_new_tokens=100,
+                temperature=0.3,  # Lower temperature for more focused responses
                 top_p=0.9,
-                pad_token_id=50256,
-                do_sample=True
+                do_sample=True,
+                pad_token_id=self.subconscious.tokenizer.eos_token_id,
+                return_full_text=True
             )[0]["generated_text"]
 
-            # Extract response after "Maddie:"
-            if "Maddie:" in result:
-                response = result.split("Maddie:")[-1].strip()
+            # Extract response - find content after <|assistant|>
+            if "<|assistant|>" in result:
+                response = result.split("<|assistant|>")[-1].strip()
             else:
                 response = result.replace(prompt, "").strip()
 
-            # Clean up response
-            response = response.split("\n")[0].strip()
-            return response if response else "I'm thinking about that..."
+            # Clean up - stop at any special tokens or newlines
+            for stop_token in ["<|", "\n\n", "[USER]", "[MADDIE]", "User:", "Maddie:"]:
+                if stop_token in response:
+                    response = response.split(stop_token)[0].strip()
+
+            # Take first meaningful sentence if response is too long
+            if len(response) > 200:
+                sentences = response.split(". ")
+                response = sentences[0] + "." if sentences else response[:200]
+
+            return response if response else "I'm not sure how to answer that."
 
         except Exception as e:
             logger.error(f"Response generation failed: {e}")
+            import traceback
+            traceback.print_exc()
             return "I'm having trouble formulating a response right now."
 
     def _process_thought(self, thought: str) -> Optional[str]:
