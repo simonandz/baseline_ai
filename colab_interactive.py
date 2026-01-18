@@ -179,25 +179,27 @@ Maddie:"""
         if self._output_area is None:
             return
 
-        # Combine thoughts and chat history
-        all_items = []
-        for item in self._thought_history[-20:]:  # Last 20 thoughts
-            all_items.append(item)
+        # Build HTML from recent thoughts
+        all_items = self._thought_history[-30:]  # Last 30 items
 
-        html_content = "<div style='font-family: monospace; max-height: 400px; overflow-y: auto;'>"
-        html_content += "".join(all_items)
+        html_content = "<div style='font-family: monospace; padding: 10px; background: #1a1a2e; color: #eee; border-radius: 8px;'>"
+        if not all_items:
+            html_content += "<p style='color: #888;'>Waiting for thoughts...</p>"
+        else:
+            html_content += "".join(all_items)
         html_content += "</div>"
 
+        # Update widget (this should trigger Colab refresh)
         self._output_area.value = html_content
 
-    def _on_user_input(self, change):
+    def _on_user_input(self, widget):
         """Handle user input from the text box."""
-        user_text = change['new'].strip()
+        user_text = widget.value.strip()
         if not user_text:
             return
 
         # Clear input
-        self._input_box.value = ""
+        widget.value = ""
 
         # Pause subconscious during interaction
         self.subconscious.pause()
@@ -224,6 +226,7 @@ Maddie:"""
 
     def _thought_processor_loop(self):
         """Background loop to process subconscious thoughts."""
+        logger.info("Thought processor loop started")
         while not self._stop_event.is_set():
             try:
                 # Check for new thoughts
@@ -232,33 +235,36 @@ Maddie:"""
                 except queue.Empty:
                     continue
 
+                logger.info(f"Processing thought from {who}: {thought[:50]}...")
+
                 if who == "AI":
-                    # Process through conscious filter
-                    refined = self._process_thought(thought)
+                    # Always show the raw thought first
+                    self._thought_history.append(
+                        self._format_thought(thought, "subconscious")
+                    )
 
-                    if refined:
-                        # Add to display
-                        if self.enable_conscious and refined != thought:
-                            self._thought_history.append(
-                                self._format_thought(thought, "subconscious")
-                            )
-                            self._thought_history.append(
-                                self._format_thought(refined, "conscious")
-                            )
-                        else:
-                            self._thought_history.append(
-                                self._format_thought(refined, "subconscious")
-                            )
+                    # Try conscious processing if enabled
+                    if self.enable_conscious and self.processor:
+                        try:
+                            refined = self._process_thought(thought)
+                            if refined and refined != thought:
+                                self._thought_history.append(
+                                    self._format_thought(f"[Refined] {refined}", "conscious")
+                                )
+                        except Exception as e:
+                            logger.warning(f"Conscious processing failed: {e}")
 
-                        # Store in memory
-                        self.memory.add_memory(f"[THOUGHT] {refined}", 0.5)
+                    # Store in memory
+                    self.memory.add_memory(f"[THOUGHT] {thought}", 0.5)
 
-                        self._update_display()
+                    self._update_display()
 
                 self.thought_queue.task_done()
 
             except Exception as e:
                 logger.error(f"Thought processing error: {e}")
+                import traceback
+                traceback.print_exc()
 
     def run(self):
         """
@@ -305,6 +311,11 @@ Maddie:"""
             daemon=True
         )
         self._processor_thread.start()
+        logger.info("Thought processor thread started")
+
+        # Make sure subconscious is running (not paused)
+        self.subconscious.resume()
+        logger.info("Subconscious resumed")
 
         self._thought_history.append(
             self._format_thought("Session started. I'm beginning to think...", "conscious")
