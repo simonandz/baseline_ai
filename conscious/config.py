@@ -1,9 +1,8 @@
 # Configuration for conscious thought processing
-# These values should match config.yaml thresholds
 CONSCIOUS_CHECK_INTERVAL = 1.0  # seconds
-SALIENCE_THRESHOLD = 0.45  # Minimum importance score (matches config.yaml)
-NOVELTY_THRESHOLD = 0.38   # Minimum novelty score (matches config.yaml)
-RELEVANCE_THRESHOLD = 0.3  # Minimum context relevance (matches config.yaml)
+SALIENCE_THRESHOLD = 0.25  # Lowered - more thoughts pass to conscious
+NOVELTY_THRESHOLD = 0.20   # Lowered - allow similar but interesting thoughts
+RELEVANCE_THRESHOLD = 0.2  # Lowered - more context relevance passes
 
 # Refinement model (smaller/faster than subconscious model)
 REFINEMENT_MODEL = "facebook/bart-large-cnn"

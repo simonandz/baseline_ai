@@ -264,18 +264,24 @@ class MaddieSession:
     def _thought_processor_loop(self):
         """Background loop to process subconscious thoughts."""
         logger.info("Thought processor loop started")
+        last_update = time.time()
+
         while not self._stop_event.is_set():
             try:
                 # Check for new thoughts
                 try:
                     who, thought = self.thought_queue.get(timeout=0.5)
                 except queue.Empty:
+                    # Even if no new thoughts, refresh display periodically
+                    if time.time() - last_update > 2.0:
+                        self._update_display()
+                        last_update = time.time()
                     continue
 
                 logger.info(f"Processing thought from {who}: {thought[:50]}...")
 
                 if who == "AI":
-                    # Always show the raw thought first
+                    # Always show the raw subconscious thought first
                     self._thought_history.append(
                         self._format_thought(thought, "subconscious")
                     )
@@ -283,11 +289,20 @@ class MaddieSession:
                     # Try conscious processing if enabled
                     if self.enable_conscious and self.processor:
                         try:
-                            refined = self._process_thought(thought)
-                            if refined and refined != thought:
-                                self._thought_history.append(
-                                    self._format_thought(f"[Refined] {refined}", "conscious")
-                                )
+                            result = self.processor.process(thought)
+                            passes = result.get("passes", False)
+                            salience = result.get("salience", 0)
+                            novelty = result.get("novelty", 0)
+
+                            logger.info(f"Conscious eval: passes={passes}, salience={salience:.2f}, novelty={novelty:.2f}")
+
+                            if passes:
+                                refined = result.get("refined", thought)
+                                # Show conscious thought (refined version or insight)
+                                if refined and len(refined) > 10:
+                                    self._thought_history.append(
+                                        self._format_thought(f"💡 {refined}", "conscious")
+                                    )
                         except Exception as e:
                             logger.warning(f"Conscious processing failed: {e}")
 
@@ -295,6 +310,7 @@ class MaddieSession:
                     self.memory.add_memory(f"[THOUGHT] {thought}", 0.5)
 
                     self._update_display()
+                    last_update = time.time()
 
                 self.thought_queue.task_done()
 
