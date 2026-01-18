@@ -128,15 +128,37 @@ class MaddieSession:
             if not self.subconscious.is_ready():
                 return "I'm still waking up... give me a moment."
 
-            # Use Phi-3 chat template - keep it simple and direct
+            # Get recent subconscious thoughts for context
+            recent_thoughts = []
+            for item in self._thought_history[-10:]:
+                if "💭" in item:  # Subconscious thought
+                    # Extract just the thought text
+                    import re
+                    match = re.search(r'💭 (.+?)</div>', item)
+                    if match:
+                        thought = match.group(1)[:100]  # Limit length
+                        recent_thoughts.append(thought)
+
+            thought_context = ""
+            if recent_thoughts:
+                thought_context = "Your recent thoughts: " + " | ".join(recent_thoughts[-3:]) + "\n\n"
+
+            # Use Phi-3 chat template - include thought context
             system_msg = (
-                "You are Maddie, a helpful AI assistant. Answer questions directly and concisely. "
-                "For math questions, give the answer. For other questions, respond helpfully in 1-2 sentences."
+                "You are Maddie, a helpful AI assistant with an active inner mind. "
+                "Answer questions directly and concisely. "
+                "For math questions, give the numerical answer. "
+                "If asked what you're thinking about, reference your recent thoughts. "
+                "Respond in 1-2 sentences."
             )
+
+            user_content = user_input
+            if thought_context and any(kw in user_input.lower() for kw in ["thinking", "thought", "mind", "what's up", "whats up"]):
+                user_content = thought_context + "User asks: " + user_input
 
             prompt = (
                 f"<|system|>\n{system_msg}<|end|>\n"
-                f"<|user|>\n{user_input}<|end|>\n"
+                f"<|user|>\n{user_content}<|end|>\n"
                 f"<|assistant|>\n"
             )
 
